@@ -7,9 +7,9 @@ use merkql::tree::MerkleTree;
 use std::collections::HashSet;
 use std::time::Duration;
 
-/// 100K records: exercises the same properties as 1M but completes in minutes
-/// rather than hours, and stays under ~500MB disk.
-const SCALE: u64 = 100_000;
+/// 1M records: feasible now that pack file eliminates space amplification.
+/// ~14MB on disk instead of ~440MB with the old per-file layout.
+const SCALE: u64 = 1_000_000;
 
 fn setup_broker(dir: &std::path::Path, partitions: u32) -> BrokerRef {
     let config = BrokerConfig {
@@ -39,11 +39,11 @@ fn setup_broker_with_retention(
     Broker::open(config).unwrap()
 }
 
-/// Produce 100K records to a topic with 4 partitions. Verify every partition has
-/// monotonically increasing, gap-free offsets. Verify total count = 100K.
+/// Produce 1M records to a topic with 4 partitions. Verify every partition has
+/// monotonically increasing, gap-free offsets. Verify total count = 1M.
 #[test]
 #[ignore]
-fn scale_100k_total_order() {
+fn scale_1m_total_order() {
     let dir = tempfile::tempdir().unwrap();
     let broker = setup_broker(dir.path(), 4);
     let producer = Broker::producer(&broker);
@@ -77,12 +77,12 @@ fn scale_100k_total_order() {
     assert_eq!(total, SCALE);
 }
 
-/// Produce 100K records to a single partition. Verify proof generation succeeds at
-/// offset 0, 50K, 99999. Verify all 3 proofs are valid. Check proof path length
-/// is approximately log2(100K) ~ 17.
+/// Produce 1M records to a single partition. Verify proof generation succeeds at
+/// offset 0, 500K, 999999. Verify all 3 proofs are valid. Check proof path length
+/// is approximately log2(1M) ~ 20.
 #[test]
 #[ignore]
-fn scale_100k_proof_depth() {
+fn scale_1m_proof_depth() {
     let dir = tempfile::tempdir().unwrap();
     let broker = setup_broker(dir.path(), 1);
     let producer = Broker::producer(&broker);
@@ -103,9 +103,9 @@ fn scale_100k_proof_depth() {
             "proof invalid at offset {}",
             offset
         );
-        // log2(100K) ≈ 17, allow margin
+        // log2(1M) ≈ 20, allow margin
         assert!(
-            proof.siblings.len() <= 25,
+            proof.siblings.len() <= 30,
             "proof depth {} too large at offset {}",
             proof.siblings.len(),
             offset
@@ -113,13 +113,13 @@ fn scale_100k_proof_depth() {
     }
 }
 
-/// Set max_records=1K. Produce 100K records. Verify only last 1K are readable.
-/// Verify min_valid_offset ≈ 99K. Verify proof works for a recent record.
+/// Set max_records=10K. Produce 1M records. Verify only last 10K are readable.
+/// Verify min_valid_offset ≈ 990K. Verify proof works for a recent record.
 #[test]
 #[ignore]
-fn scale_100k_retention_sliding() {
+fn scale_1m_retention_sliding() {
     let dir = tempfile::tempdir().unwrap();
-    let broker = setup_broker_with_retention(dir.path(), 1, 1_000);
+    let broker = setup_broker_with_retention(dir.path(), 1, 10_000);
     let producer = Broker::producer(&broker);
 
     for i in 0..SCALE {
@@ -133,10 +133,10 @@ fn scale_100k_retention_sliding() {
 
     assert_eq!(partition.next_offset(), SCALE);
     assert!(
-        partition.min_valid_offset() >= SCALE - 1_000,
+        partition.min_valid_offset() >= SCALE - 10_000,
         "min_valid_offset {} should be >= {}",
         partition.min_valid_offset(),
-        SCALE - 1_000
+        SCALE - 10_000
     );
 
     // Old records should be None
@@ -156,11 +156,11 @@ fn scale_100k_retention_sliding() {
     assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
 }
 
-/// Produce 100K records. Drop broker. Reopen. Verify next_offset = 100K.
+/// Produce 1M records. Drop broker. Reopen. Verify next_offset = 1M.
 /// Read 10 random records by offset, verify they exist.
 #[test]
 #[ignore]
-fn scale_100k_reopen() {
+fn scale_1m_reopen() {
     let dir = tempfile::tempdir().unwrap();
 
     {
@@ -189,15 +189,15 @@ fn scale_100k_reopen() {
             "record at offset {} missing after reopen",
             offset
         );
-        offset = (offset + 9991) % SCALE; // prime stride
+        offset = (offset + 99991) % SCALE; // prime stride
     }
 }
 
-/// Produce 100K records in 10 phases (10K each). Consumer group commits after
+/// Produce 1M records in 10 phases (100K each). Consumer group commits after
 /// each phase. Verify no gaps, no duplicates across all phases.
 #[test]
 #[ignore]
-fn scale_100k_consumer_exactly_once() {
+fn scale_1m_consumer_exactly_once() {
     let dir = tempfile::tempdir().unwrap();
     let broker = setup_broker(dir.path(), 1);
     let producer = Broker::producer(&broker);
@@ -241,16 +241,16 @@ fn scale_100k_consumer_exactly_once() {
     );
 }
 
-/// Produce 100K records via send_batch() in batches of 1000. Verify total count
+/// Produce 1M records via send_batch() in batches of 10000. Verify total count
 /// and no gaps.
 #[test]
 #[ignore]
-fn scale_100k_batch_throughput() {
+fn scale_1m_batch_throughput() {
     let dir = tempfile::tempdir().unwrap();
     let broker = setup_broker(dir.path(), 1);
     let producer = Broker::producer(&broker);
 
-    let batch_size: u64 = 1000;
+    let batch_size: u64 = 10_000;
     let num_batches = SCALE / batch_size;
 
     for batch_idx in 0..num_batches {
