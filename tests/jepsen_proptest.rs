@@ -9,7 +9,7 @@ use proptest::prelude::*;
 use std::collections::HashSet;
 use std::time::Duration;
 
-fn broker_config(dir: &std::path::Path, partitions: u32) -> BrokerConfig {
+fn pt_broker_config(dir: &std::path::Path, partitions: u32) -> BrokerConfig {
     BrokerConfig {
         data_dir: dir.to_path_buf(),
         default_partitions: partitions,
@@ -50,7 +50,7 @@ proptest! {
         ops in proptest::collection::vec(op_strategy(200), 10..200),
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let mut broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+        let mut broker = Broker::open(pt_broker_config(dir.path(), 1)).unwrap();
         let mut appended_values: Vec<String> = Vec::new();
 
         // Create 3 topics up front
@@ -111,7 +111,7 @@ proptest! {
                 }
                 Op::CloseReopen => {
                     drop(broker);
-                    broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+                    broker = Broker::open(pt_broker_config(dir.path(), 1)).unwrap();
                     consumer_created = false;
                 }
             }
@@ -147,15 +147,19 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Property 2: Payload size fidelity
+// Property 2: Payload size fidelity (up to 1MB)
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig {
+        cases: 100,
+        timeout: 60000,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn payload_size_fidelity(
-        payload in "[\\x20-\\x7E]{1,65536}",
+        payload in "[\\x20-\\x7E]{1,1048576}",
     ) {
         let dir = tempfile::tempdir().unwrap();
         let broker = setup_broker(dir.path(), 1);
@@ -248,7 +252,7 @@ proptest! {
         reopen_between in proptest::bool::ANY,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let mut broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+        let mut broker = Broker::open(pt_broker_config(dir.path(), 1)).unwrap();
 
         // Produce all records
         {
@@ -265,7 +269,7 @@ proptest! {
         for _phase in 0..num_phases {
             if reopen_between {
                 drop(broker);
-                broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+                broker = Broker::open(pt_broker_config(dir.path(), 1)).unwrap();
             }
 
             let mut consumer = Broker::consumer(
@@ -300,5 +304,40 @@ proptest! {
             "should have no duplicates"
         );
         prop_assert_eq!(all_consumed, expected, "records should be in order");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 5: Binary payload fidelity
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 100,
+        timeout: 30000,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn binary_payload_fidelity(
+        bytes in proptest::collection::vec(proptest::num::u8::ANY, 1..65536),
+    ) {
+        let payload = String::from_utf8_lossy(&bytes).into_owned();
+        let dir = tempfile::tempdir().unwrap();
+        let broker = setup_broker(dir.path(), 1);
+        let producer = Broker::producer(&broker);
+
+        let pr = ProducerRecord::new("binary-fidelity", None, payload.clone());
+        let record = producer.send(&pr).unwrap();
+
+        let guard = broker.lock().unwrap();
+        let topic = guard.topic("binary-fidelity").unwrap();
+        let partition = topic.partition(record.partition).unwrap();
+        let read_back = partition.read(record.offset).unwrap().unwrap();
+
+        prop_assert_eq!(
+            &read_back.value, &payload,
+            "binary payload not preserved (len {})", payload.len()
+        );
     }
 }

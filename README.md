@@ -107,35 +107,38 @@ assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
 
 ## Correctness Verification
 
-merkql includes a Jepsen-style test suite that makes data-backed claims about correctness properties at scale, injects faults, and exercises random operation sequences via property-based testing.
+merkql includes a Jepsen-style test suite that makes data-backed claims about correctness properties at scale, injects faults with real assertions, and exercises random operation sequences via property-based testing.
 
 ### Properties Verified
 
 | Property | Claim | Sample Size |
 |---|---|---|
 | **Total Order** | Partition offsets are monotonically increasing and gap-free | 10,000 records across 4 partitions |
-| **Durability** | All records survive broker close/reopen cycles | 4,998 records across 3 reopen cycles |
+| **Durability** | All records survive broker close/reopen cycles | 5,000 records across 3 reopen cycles |
 | **Exactly-Once** | Consumer groups deliver every record exactly once across commit/restart | 1,000 records across 4 phases |
 | **Merkle Integrity** | 100% of records have valid inclusion proofs | 10,000 proofs across 4 partitions |
 | **No Data Loss** | Every confirmed append is immediately readable | 5,000 records verified immediately after write |
-| **Byte Fidelity** | Values preserved exactly for edge-case payloads | 16 payloads (empty, unicode, 64KB, null bytes, boundary lengths) |
+| **Byte Fidelity** | Values preserved exactly for edge-case payloads | 500 payloads (boundary lengths, unicode, CJK, RTL, combining chars, structured data, control chars, random ASCII up to 64KB) |
 
 ### Fault Injection (Nemesis)
 
-| Fault | Behavior |
+All nemesis tests assert correctness — they do not just observe behavior.
+
+| Fault | Assertion |
 |---|---|
-| **Crash (drop without close)** | All 1,000 records survive 10 ungraceful drop cycles |
-| **Truncated tree.snapshot** | Broker refuses to reopen (safe failure) |
-| **Truncated offsets.idx** | Broker reopens with N-1 records (loses partial entry) |
-| **Missing HEAD** | Broker reopens, all records readable, new appends succeed |
-| **Index ahead of snapshot** | Records readable, 1 proof error at the crash boundary |
+| **Crash (drop without close)** | All 1,000 records recovered after 10 ungraceful drop cycles |
+| **Truncated tree.snapshot** | Broker refuses to reopen (safe failure) or reopens gracefully |
+| **Truncated offsets.idx** | Broker reopens with 99 records (loses partial entry), zero read errors |
+| **Missing HEAD** | Broker reopens, all 100 records readable, new appends succeed |
+| **Index ahead of snapshot** | 101 records readable, at least 100 valid proofs |
 
 ### Property-Based Testing
 
 50-100 proptest cases per family:
 
 - **Random operation sequences** — Append/Read/Commit/CloseReopen across 3 topics, verify total order and proof validity
-- **Payload fidelity** — Random printable ASCII 1B-64KB, exact preservation
+- **Payload fidelity** — Random printable ASCII 1B-1MB, exact preservation
+- **Binary payload fidelity** — Arbitrary byte sequences (via `from_utf8_lossy`) 1B-64KB, tests full byte spectrum
 - **Multi-topic/partition** — 1-5 topics x 1-8 partitions x 10-200 records, total order and proof validity
 - **Multi-phase exactly-once** — 50-500 records, 2-6 phases, optional broker reopen between phases
 
@@ -164,19 +167,20 @@ Optimized build (Criterion):
 ### Running the Test Suite
 
 ```bash
-# All tests (65 total)
+# All tests (66 total)
 cargo test
 
-# Jepsen checkers only
+# Jepsen checkers only (6 tests including 500-payload byte fidelity)
 cargo test --test jepsen_checkers
 
-# Property-based tests
+# Property-based tests (5 families including 1MB payloads and binary data)
 cargo test --test jepsen_proptest
 
-# Fault injection (use --nocapture to see nemesis observations)
-cargo test --test jepsen_nemesis -- --nocapture
+# Fault injection with assertions
+cargo test --test jepsen_nemesis
 
 # Full JSON report (stdout + target/jepsen-report.json)
+# Includes 6 property checks, 5 nemesis checks, 6+ benchmarks
 cargo test --test jepsen_report -- --nocapture
 
 # Criterion benchmarks (HTML report in target/criterion/)

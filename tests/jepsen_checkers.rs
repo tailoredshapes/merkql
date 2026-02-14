@@ -12,8 +12,7 @@ fn total_order_10k_across_4_partitions() {
 #[test]
 fn durability_across_3_reopen_cycles() {
     let dir = tempfile::tempdir().unwrap();
-    // Use 4998 so it divides evenly into 3 cycles
-    let result = check_durability(dir.path(), 4998);
+    let result = check_durability(dir.path(), 5000, 3);
     assert!(result.passed, "Durability: {}", result.details);
 }
 
@@ -39,8 +38,13 @@ fn no_data_loss_5k() {
 }
 
 #[test]
-fn byte_fidelity_edge_cases() {
+fn byte_fidelity_500_payloads() {
     let dir = tempfile::tempdir().unwrap();
     let result = check_byte_fidelity(dir.path());
     assert!(result.passed, "Byte Fidelity: {}", result.details);
+    assert!(
+        result.sample_size >= 500,
+        "Expected at least 500 payloads, got {}",
+        result.sample_size
+    );
 }

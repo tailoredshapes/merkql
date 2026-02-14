@@ -6,12 +6,13 @@ use merkql::record::ProducerRecord;
 use std::fs;
 
 /// Generates a comprehensive Jepsen-style verification report.
-/// Runs all 6 checker functions and 4 benchmark measurements.
+/// Runs all 6 checker functions, 5 nemesis checkers, and 6 benchmark measurements.
 /// Outputs JSON to stdout and target/jepsen-report.json.
 #[test]
 fn generate_jepsen_report() {
     let mut properties = Vec::new();
     let mut benchmarks = Vec::new();
+    let mut nemesis = Vec::new();
 
     // --- Property checks ---
 
@@ -24,7 +25,7 @@ fn generate_jepsen_report() {
     eprintln!("Running checker: Durability...");
     {
         let dir = tempfile::tempdir().unwrap();
-        properties.push(check_durability(dir.path(), 4998));
+        properties.push(check_durability(dir.path(), 5000, 3));
     }
 
     eprintln!("Running checker: Exactly-Once...");
@@ -51,6 +52,38 @@ fn generate_jepsen_report() {
         properties.push(check_byte_fidelity(dir.path()));
     }
 
+    // --- Nemesis checks ---
+
+    eprintln!("Running nemesis: Crash Recovery...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        nemesis.push(check_crash_recovery(dir.path(), 100, 10));
+    }
+
+    eprintln!("Running nemesis: Truncated Snapshot...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        nemesis.push(check_truncated_snapshot(dir.path(), 100));
+    }
+
+    eprintln!("Running nemesis: Truncated Index...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        nemesis.push(check_truncated_index(dir.path(), 100));
+    }
+
+    eprintln!("Running nemesis: Missing HEAD...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        nemesis.push(check_missing_head(dir.path(), 100));
+    }
+
+    eprintln!("Running nemesis: Index Ahead of Snapshot...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        nemesis.push(check_index_ahead_of_snapshot(dir.path(), 100));
+    }
+
     // --- Benchmark measurements ---
 
     eprintln!("Running benchmark: Append Latency (256B)...");
@@ -66,16 +99,46 @@ fn generate_jepsen_report() {
         }));
     }
 
-    eprintln!("Running benchmark: Read Latency...");
+    eprintln!("Running benchmark: Append Latency by Payload Size...");
+    for &size in &[64, 256, 1024, 4096, 16384, 65536] {
+        let dir = tempfile::tempdir().unwrap();
+        let broker = setup_broker(dir.path(), 1);
+        let producer = Broker::producer(&broker);
+        let payload = generate_payload(size);
+
+        benchmarks.push(measure_latency(
+            &format!("Append Latency ({}B payload)", size),
+            500,
+            |_| {
+                let pr = ProducerRecord::new("bench-size", None, payload.clone());
+                producer.send(&pr).unwrap();
+            },
+        ));
+    }
+
+    eprintln!("Running benchmark: Read Latency (sequential)...");
     {
         let dir = tempfile::tempdir().unwrap();
         let broker = setup_broker(dir.path(), 1);
         produce_n(&broker, "bench-read", 10_000, |i| format!("v{}", i), |_| None);
 
-        // Sequential read benchmark
         benchmarks.push(measure_latency("Read Latency (sequential)", 10_000, |i| {
             let guard = broker.lock().unwrap();
             let topic = guard.topic("bench-read").unwrap();
+            let partition = topic.partition(0).unwrap();
+            let _ = partition.read(i as u64).unwrap();
+        }));
+    }
+
+    eprintln!("Running benchmark: Read Throughput (10K sequential scan)...");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let broker = setup_broker(dir.path(), 1);
+        produce_n(&broker, "bench-read-tp", 10_000, |i| format!("v{}", i), |_| None);
+
+        benchmarks.push(measure_latency("Read Throughput (10K sequential scan)", 10_000, |i| {
+            let guard = broker.lock().unwrap();
+            let topic = guard.topic("bench-read-tp").unwrap();
             let partition = topic.partition(0).unwrap();
             let _ = partition.read(i as u64).unwrap();
         }));
@@ -115,6 +178,7 @@ fn generate_jepsen_report() {
         title: "merkql Jepsen-Style Verification Report".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         properties,
+        nemesis,
         benchmarks,
     };
 
@@ -130,5 +194,10 @@ fn generate_jepsen_report() {
     // Assert all properties passed
     for prop in &report.properties {
         assert!(prop.passed, "Property '{}' failed: {}", prop.name, prop.details);
+    }
+
+    // Assert all nemesis tests passed
+    for nem in &report.nemesis {
+        assert!(nem.passed, "Nemesis '{}' failed: {}", nem.name, nem.details);
     }
 }
