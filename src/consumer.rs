@@ -49,13 +49,8 @@ impl Consumer {
         self.subscribed_topics = topics.iter().map(|s| s.to_string()).collect();
         self.positions.clear();
 
-        let broker = self
-            .broker
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
-
         for topic_name in &self.subscribed_topics {
-            if let Some(topic) = broker.topic(topic_name) {
+            if let Some(topic) = self.broker.topic(topic_name) {
                 for part_id in topic.partition_ids() {
                     let tp = TopicPartition {
                         topic: topic_name.clone(),
@@ -63,18 +58,23 @@ impl Consumer {
                     };
 
                     // Check committed offset
-                    let committed = broker
+                    let committed = self
+                        .broker
                         .group(&self.config.group_id)
-                        .and_then(|g| g.committed_offset(&tp));
+                        .and_then(|g| {
+                            let guard = g.lock().unwrap();
+                            guard.committed_offset(&tp)
+                        });
 
                     let position = match committed {
                         Some(off) => off, // Resume from committed offset
                         None => match self.config.offset_reset {
                             OffsetReset::Earliest => 0,
-                            OffsetReset::Latest => topic
-                                .partition(part_id)
-                                .map(|p| p.next_offset())
-                                .unwrap_or(0),
+                            OffsetReset::Latest => {
+                                let part_arc = topic.partition(part_id).unwrap();
+                                let part = part_arc.read().unwrap();
+                                part.next_offset()
+                            }
                         },
                     };
 
@@ -87,27 +87,26 @@ impl Consumer {
     }
 
     /// Poll for records. Returns records available from the current position
-    /// up to the current tail of each partition.
+    /// up to the current tail of each partition. Takes read locks on partitions.
     pub fn poll(&mut self, _timeout: Duration) -> Result<Vec<Record>> {
         if self.closed {
             bail!("consumer is closed");
         }
 
-        let broker = self
-            .broker
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
         let mut records = Vec::new();
 
         for (tp, position) in &mut self.positions {
-            if let Some(topic) = broker.topic(&tp.topic)
-                && let Some(partition) = topic.partition(tp.partition)
-            {
-                let tail = partition.next_offset();
-                if *position < tail {
-                    let batch = partition.read_range(*position, tail)?;
-                    *position = tail;
-                    records.extend(batch);
+            if let Some(topic) = self.broker.topic(&tp.topic) {
+                if let Some(part_arc) = topic.partition(tp.partition) {
+                    let part = part_arc
+                        .read()
+                        .map_err(|e| anyhow::anyhow!("partition read lock: {}", e))?;
+                    let tail = part.next_offset();
+                    if *position < tail {
+                        let batch = part.read_range(*position, tail)?;
+                        *position = tail;
+                        records.extend(batch);
+                    }
                 }
             }
         }
@@ -121,11 +120,8 @@ impl Consumer {
             bail!("consumer is closed");
         }
 
-        let mut broker = self
-            .broker
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {}", e))?;
-        broker.commit_offsets(&self.config.group_id, &self.positions)
+        self.broker
+            .commit_offsets(&self.config.group_id, &self.positions)
     }
 
     /// Close the consumer. If auto_commit is enabled, commits first.

@@ -1,14 +1,18 @@
-use merkql::broker::{Broker, BrokerConfig};
+use merkql::broker::{Broker, BrokerConfig, BrokerRef};
+use merkql::compression::Compression;
 use merkql::consumer::{ConsumerConfig, OffsetReset};
 use merkql::record::ProducerRecord;
+use merkql::topic::RetentionConfig;
 use merkql::tree::MerkleTree;
 use std::time::Duration;
 
-fn setup_broker(dir: &std::path::Path) -> merkql::broker::BrokerRef {
+fn setup_broker(dir: &std::path::Path) -> BrokerRef {
     let config = BrokerConfig {
         data_dir: dir.to_path_buf(),
         default_partitions: 1,
         auto_create_topics: true,
+        compression: Compression::None,
+        default_retention: RetentionConfig::default(),
     };
     Broker::open(config).unwrap()
 }
@@ -26,9 +30,9 @@ fn proof_validity_for_all_records() {
         producer.send(&pr).unwrap();
     }
 
-    let broker_guard = broker.lock().unwrap();
-    let topic = broker_guard.topic("proof-topic").unwrap();
-    let partition = topic.partition(0).unwrap();
+    let topic = broker.topic("proof-topic").unwrap();
+    let part_arc = topic.partition(0).unwrap();
+    let partition = part_arc.read().unwrap();
 
     for offset in 0..num_records {
         let proof = partition.proof(offset as u64).unwrap();
@@ -48,26 +52,16 @@ fn identical_records_identical_roots() {
         data_dir: dir.path().to_path_buf(),
         default_partitions: 1,
         auto_create_topics: true,
+        compression: Compression::None,
+        default_retention: RetentionConfig::default(),
     };
     let broker = Broker::open(config).unwrap();
 
-    {
-        let mut broker_guard = broker.lock().unwrap();
-        broker_guard.create_topic("topic-a", 1).unwrap();
-        broker_guard.create_topic("topic-b", 1).unwrap();
-    }
+    broker.create_topic("topic-a", 1).unwrap();
+    broker.create_topic("topic-b", 1).unwrap();
 
     let producer = Broker::producer(&broker);
 
-    // Produce identical values (but different topics/keys won't matter for partition root comparison)
-    // Actually: records have topic name baked in, so they won't be identical.
-    // Instead, compare two partitions in the same topic by forcing same data.
-    // The meaningful test: same content → same record hash in object store.
-
-    // Simpler: use two separate partitions and verify that appending the same
-    // sequence of data produces consistent merkle behavior.
-
-    // Let's verify that the merkle root is deterministic for the same sequence.
     let values: Vec<String> = (0..5).map(|i| format!(r#"{{"id": {}}}"#, i)).collect();
 
     for v in &values {
@@ -75,9 +69,9 @@ fn identical_records_identical_roots() {
         producer.send(&pr).unwrap();
     }
 
-    let broker_guard = broker.lock().unwrap();
-    let topic_a = broker_guard.topic("topic-a").unwrap();
-    let part_a = topic_a.partition(0).unwrap();
+    let topic_a = broker.topic("topic-a").unwrap();
+    let part_arc = topic_a.partition(0).unwrap();
+    let part_a = part_arc.read().unwrap();
 
     let root_a = part_a.merkle_root().unwrap();
     assert!(
@@ -104,9 +98,9 @@ fn tamper_detection() {
         producer.send(&pr).unwrap();
     }
 
-    let broker_guard = broker.lock().unwrap();
-    let topic = broker_guard.topic("tamper-topic").unwrap();
-    let partition = topic.partition(0).unwrap();
+    let topic = broker.topic("tamper-topic").unwrap();
+    let part_arc = topic.partition(0).unwrap();
+    let partition = part_arc.read().unwrap();
 
     // Get a valid proof
     let proof = partition.proof(2).unwrap().unwrap();
@@ -141,9 +135,9 @@ fn merkle_root_progression() {
         let pr = ProducerRecord::new("root-topic", None, format!("v{}", i));
         producer.send(&pr).unwrap();
 
-        let broker_guard = broker.lock().unwrap();
-        let topic = broker_guard.topic("root-topic").unwrap();
-        let partition = topic.partition(0).unwrap();
+        let topic = broker.topic("root-topic").unwrap();
+        let part_arc = topic.partition(0).unwrap();
+        let partition = part_arc.read().unwrap();
         let root = partition.merkle_root().unwrap().unwrap();
         roots.push(root);
     }
@@ -182,9 +176,9 @@ fn consume_and_verify_proofs() {
     assert_eq!(records.len(), 10);
 
     // Verify proof for each consumed record
-    let broker_guard = broker.lock().unwrap();
-    let topic = broker_guard.topic("verify-topic").unwrap();
-    let partition = topic.partition(0).unwrap();
+    let topic = broker.topic("verify-topic").unwrap();
+    let part_arc = topic.partition(0).unwrap();
+    let partition = part_arc.read().unwrap();
 
     for record in &records {
         let proof = partition.proof(record.offset).unwrap().unwrap();

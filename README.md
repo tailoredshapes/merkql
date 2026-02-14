@@ -9,9 +9,13 @@ merkql provides an embedded, file-based alternative to Apache Kafka for event st
 - **Kafka-compatible API** — Topics, partitions, consumer groups, offset management, subscribe/poll/commit_sync/close lifecycle
 - **Merkle tree integrity** — Every partition is a merkle tree. Generate inclusion proofs, verify records, detect tampering
 - **Content-addressed storage** — Git-style object store with SHA-256 hashing. Identical data is never stored twice
+- **Crash-safe** — Atomic writes (temp+fsync+rename) for all metadata. Index fsync on every write. No data loss on crash
+- **Concurrent** — Fine-grained locking: `RwLock` per partition, `RwLock` on topic map, `Mutex` per consumer group. Readers never block readers. Writers only block their own partition
+- **LZ4 compression** — Optional per-broker transparent compression. Objects hashed before compression so merkle proofs work regardless of compression mode. Mixed-mode reads supported
+- **Retention** — Configurable `max_records` per topic. Old records become unreachable without ObjectStore GC
+- **Batch API** — `send_batch()` amortizes fsync (1 per batch instead of 1 per record)
 - **Persistent** — All state survives process restarts. Topics, partitions, offsets, and tree snapshots are durable on disk
 - **Zero dependencies at runtime** — No external services. No ZooKeeper, no JVM, no network servers
-- **Multi-phase consumption** — Subscribe, drain, commit, close, re-subscribe with new topics. Offsets persist across phases
 
 ## Quick Start
 
@@ -61,9 +65,9 @@ consumer.close().unwrap();
 
 ```rust
 // After producing records, verify integrity
-let broker_guard = broker.lock().unwrap();
-let topic = broker_guard.topic("events").unwrap();
-let partition = topic.partition(0).unwrap();
+let topic = broker.topic("events").unwrap();
+let part_arc = topic.partition(0).unwrap();
+let partition = part_arc.read().unwrap();
 
 // Generate a proof for offset 0
 let proof = partition.proof(0).unwrap().unwrap();
@@ -71,6 +75,32 @@ let proof = partition.proof(0).unwrap().unwrap();
 // Verify the proof
 use merkql::tree::MerkleTree;
 assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
+```
+
+### Compression
+
+```rust
+use merkql::compression::Compression;
+
+let config = BrokerConfig {
+    compression: Compression::Lz4,
+    ..BrokerConfig::new("/tmp/my-log")
+};
+let broker = Broker::open(config).unwrap();
+// All writes are now LZ4-compressed. Reads auto-detect compression via per-object markers.
+```
+
+### Retention
+
+```rust
+use merkql::topic::RetentionConfig;
+
+let config = BrokerConfig {
+    default_retention: RetentionConfig { max_records: Some(10_000) },
+    ..BrokerConfig::new("/tmp/my-log")
+};
+let broker = Broker::open(config).unwrap();
+// Topics auto-trim to the most recent 10,000 records per partition.
 ```
 
 ## Architecture
@@ -83,12 +113,12 @@ assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
       partitions/
         {id}/
           objects/ab/cdef...      # Content-addressed merkle nodes + records
-          HEAD                    # Hash of latest commit
           offsets.idx             # Fixed-width index: offset -> record hash
-          tree.snapshot           # Incremental tree state
+          tree.snapshot           # Incremental tree state (atomic write)
+          retention.bin           # Retention marker (atomic write)
   groups/
     {group-id}/
-      offsets.bin                 # Committed offsets per topic-partition
+      offsets.bin                 # Committed offsets per topic-partition (atomic write)
   config.bin                      # Broker config
 ```
 
@@ -104,6 +134,7 @@ assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
 | `consumer.close()` | `consumer.close()` | End phase |
 | `Broker::producer(broker)` | `new KafkaProducer<>(props)` | Send records |
 | `producer.send(record)` | `producer.send(record)` | Auto-creates topics |
+| `producer.send_batch(records)` | N/A | Batch API for amortized fsync |
 
 ## Correctness Verification
 
@@ -129,8 +160,18 @@ All nemesis tests assert correctness — they do not just observe behavior.
 | **Crash (drop without close)** | All 1,000 records recovered after 10 ungraceful drop cycles |
 | **Truncated tree.snapshot** | Broker refuses to reopen (safe failure) or reopens gracefully |
 | **Truncated offsets.idx** | Broker reopens with 99 records (loses partial entry), zero read errors |
-| **Missing HEAD** | Broker reopens, all 100 records readable, new appends succeed |
+| **Missing tree.snapshot** | Broker reopens, all 100 records readable, new appends succeed |
 | **Index ahead of snapshot** | 101 records readable, at least 100 valid proofs |
+
+### v2 Feature Tests
+
+| Feature | Tests |
+|---|---|
+| **Concurrent producers** | N threads writing to same topic, verify no gaps |
+| **Concurrent consumers** | Independent groups consuming simultaneously |
+| **Batch API** | send_batch with various sizes, empty batch |
+| **LZ4 compression** | Round-trip, persistence, mixed-mode, merkle proofs |
+| **Retention** | max_records window, consumer view, persistence |
 
 ### Property-Based Testing
 
@@ -142,32 +183,10 @@ All nemesis tests assert correctness — they do not just observe behavior.
 - **Multi-topic/partition** — 1-5 topics x 1-8 partitions x 10-200 records, total order and proof validity
 - **Multi-phase exactly-once** — 50-500 records, 2-6 phases, optional broker reopen between phases
 
-### Performance
-
-Measured on the Jepsen report runner (unoptimized build):
-
-| Operation | P50 | P95 | P99 | Throughput |
-|---|---|---|---|---|
-| Append (256B) | 139 us | 193 us | 263 us | 6,825 ops/s |
-| Read (sequential) | 8 us | 9 us | 12 us | 113,241 ops/s |
-| Proof generate + verify (10K log) | 516 us | 596 us | 804 us | 1,897 ops/s |
-| Broker reopen (10K records) | 28 us | 32 us | 72 us | — |
-
-Optimized build (Criterion):
-
-| Operation | Time |
-|---|---|
-| Append (256B payload) | 103 us |
-| Append throughput (256KB payload) | 948 MiB/s |
-| Read latency (random access, 10K log) | 4.8 us |
-| Read throughput (10K sequential scan) | 141K elem/s |
-| Proof generate + verify (10K log) | 149 us |
-| Broker reopen (50K records) | 28 us |
-
 ### Running the Test Suite
 
 ```bash
-# All tests (66 total)
+# All tests (96 total)
 cargo test
 
 # Jepsen checkers only (6 tests including 500-payload byte fidelity)
@@ -179,8 +198,10 @@ cargo test --test jepsen_proptest
 # Fault injection with assertions
 cargo test --test jepsen_nemesis
 
+# v2 features: concurrency, batch, compression, retention
+cargo test --test v2_features_test
+
 # Full JSON report (stdout + target/jepsen-report.json)
-# Includes 6 property checks, 5 nemesis checks, 6+ benchmarks
 cargo test --test jepsen_report -- --nocapture
 
 # Criterion benchmarks (HTML report in target/criterion/)

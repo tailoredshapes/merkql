@@ -1,5 +1,5 @@
 pub mod broker;
-pub mod commit;
+pub mod compression;
 pub mod consumer;
 pub mod group;
 pub mod hash;

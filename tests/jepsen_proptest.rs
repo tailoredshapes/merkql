@@ -2,8 +2,10 @@ mod common;
 
 use common::*;
 use merkql::broker::{Broker, BrokerConfig};
+use merkql::compression::Compression;
 use merkql::consumer::{ConsumerConfig, OffsetReset};
 use merkql::record::ProducerRecord;
+use merkql::topic::RetentionConfig;
 use merkql::tree::MerkleTree;
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -14,6 +16,8 @@ fn pt_broker_config(dir: &std::path::Path, partitions: u32) -> BrokerConfig {
         data_dir: dir.to_path_buf(),
         default_partitions: partitions,
         auto_create_topics: true,
+        compression: Compression::None,
+        default_retention: RetentionConfig::default(),
     }
 }
 
@@ -54,12 +58,9 @@ proptest! {
         let mut appended_values: Vec<String> = Vec::new();
 
         // Create 3 topics up front
-        {
-            let mut guard = broker.lock().unwrap();
-            guard.create_topic("prop-t0", 1).unwrap();
-            guard.create_topic("prop-t1", 1).unwrap();
-            guard.create_topic("prop-t2", 1).unwrap();
-        }
+        broker.create_topic("prop-t0", 1).unwrap();
+        broker.create_topic("prop-t1", 1).unwrap();
+        broker.create_topic("prop-t2", 1).unwrap();
 
         let topics = ["prop-t0", "prop-t1", "prop-t2"];
         let mut consumer_created = false;
@@ -72,17 +73,17 @@ proptest! {
                     let pr = ProducerRecord::new(topic, None, value.clone());
                     let record = producer.send(&pr).unwrap();
                     // Verify offset is sequential within partition
-                    let guard = broker.lock().unwrap();
-                    let t = guard.topic(topic).unwrap();
-                    let p = t.partition(record.partition).unwrap();
+                    let t = broker.topic(topic).unwrap();
+                    let part_arc = t.partition(record.partition).unwrap();
+                    let p = part_arc.read().unwrap();
                     prop_assert!(record.offset < p.next_offset());
                     appended_values.push(value.clone());
                 }
                 Op::Read { offset } => {
-                    let guard = broker.lock().unwrap();
                     for topic in &topics {
-                        if let Some(t) = guard.topic(topic) {
-                            let p = t.partition(0).unwrap();
+                        if let Some(t) = broker.topic(topic) {
+                            let part_arc = t.partition(0).unwrap();
+                            let p = part_arc.read().unwrap();
                             if *offset < p.next_offset() {
                                 let record = p.read(*offset).unwrap();
                                 prop_assert!(record.is_some());
@@ -119,10 +120,10 @@ proptest! {
 
         // Final invariant checks:
         // 1. Total order per partition
-        let guard = broker.lock().unwrap();
         for topic in &topics {
-            if let Some(t) = guard.topic(topic) {
-                let p = t.partition(0).unwrap();
+            if let Some(t) = broker.topic(topic) {
+                let part_arc = t.partition(0).unwrap();
+                let p = part_arc.read().unwrap();
                 for offset in 0..p.next_offset() {
                     let record = p.read(offset).unwrap();
                     prop_assert!(record.is_some(), "gap at offset {}", offset);
@@ -133,8 +134,9 @@ proptest! {
 
         // 2. Proofs valid for all records
         for topic in &topics {
-            if let Some(t) = guard.topic(topic) {
-                let p = t.partition(0).unwrap();
+            if let Some(t) = broker.topic(topic) {
+                let part_arc = t.partition(0).unwrap();
+                let p = part_arc.read().unwrap();
                 for offset in 0..p.next_offset() {
                     if let Some(proof) = p.proof(offset).unwrap() {
                         let valid = MerkleTree::verify_proof(&proof, p.store()).unwrap();
@@ -168,9 +170,9 @@ proptest! {
         let pr = ProducerRecord::new("fidelity", None, payload.clone());
         let record = producer.send(&pr).unwrap();
 
-        let guard = broker.lock().unwrap();
-        let topic = guard.topic("fidelity").unwrap();
-        let partition = topic.partition(record.partition).unwrap();
+        let topic = broker.topic("fidelity").unwrap();
+        let part_arc = topic.partition(record.partition).unwrap();
+        let partition = part_arc.read().unwrap();
         let read_back = partition.read(record.offset).unwrap().unwrap();
 
         prop_assert_eq!(&read_back.value, &payload, "payload not preserved");
@@ -195,11 +197,8 @@ proptest! {
 
         // Create topics
         let topic_names: Vec<String> = (0..num_topics).map(|i| format!("mt-{}", i)).collect();
-        {
-            let mut guard = broker.lock().unwrap();
-            for name in &topic_names {
-                guard.create_topic(name, num_partitions).unwrap();
-            }
+        for name in &topic_names {
+            broker.create_topic(name, num_partitions).unwrap();
         }
 
         // Produce records across all topics
@@ -211,11 +210,11 @@ proptest! {
         }
 
         // Verify invariants
-        let guard = broker.lock().unwrap();
         for name in &topic_names {
-            let topic = guard.topic(name).unwrap();
+            let topic = broker.topic(name).unwrap();
             for pid in topic.partition_ids() {
-                let partition = topic.partition(pid).unwrap();
+                let part_arc = topic.partition(pid).unwrap();
+                let partition = part_arc.read().unwrap();
 
                 // Total order
                 for offset in 0..partition.next_offset() {
@@ -330,9 +329,9 @@ proptest! {
         let pr = ProducerRecord::new("binary-fidelity", None, payload.clone());
         let record = producer.send(&pr).unwrap();
 
-        let guard = broker.lock().unwrap();
-        let topic = guard.topic("binary-fidelity").unwrap();
-        let partition = topic.partition(record.partition).unwrap();
+        let topic = broker.topic("binary-fidelity").unwrap();
+        let part_arc = topic.partition(record.partition).unwrap();
+        let partition = part_arc.read().unwrap();
         let read_back = partition.read(record.offset).unwrap().unwrap();
 
         prop_assert_eq!(

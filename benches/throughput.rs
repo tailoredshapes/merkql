@@ -1,6 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use merkql::broker::{Broker, BrokerConfig, BrokerRef};
+use merkql::compression::Compression;
 use merkql::record::ProducerRecord;
+use merkql::topic::RetentionConfig;
 use merkql::tree::MerkleTree;
 use std::path::Path;
 
@@ -9,6 +11,8 @@ fn setup_broker(dir: &Path, partitions: u32) -> BrokerRef {
         data_dir: dir.to_path_buf(),
         default_partitions: partitions,
         auto_create_topics: true,
+        compression: Compression::None,
+        default_retention: RetentionConfig::default(),
     };
     Broker::open(config).unwrap()
 }
@@ -88,9 +92,9 @@ fn read_throughput(c: &mut Criterion) {
     group.throughput(Throughput::Elements(10_000));
     group.bench_function("10K_sequential", |b| {
         b.iter(|| {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("read-bench").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("read-bench").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             for offset in 0..10_000u64 {
                 let _ = partition.read(offset).unwrap();
             }
@@ -120,9 +124,9 @@ fn read_latency(c: &mut Criterion) {
     let mut offset = 0u64;
     group.bench_function("prime_stride_10K", |b| {
         b.iter(|| {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("read-lat").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("read-lat").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             let _ = partition.read(offset % 10_000).unwrap();
             offset = (offset + 7919) % 10_000; // prime stride
         });
@@ -153,9 +157,9 @@ fn proof_operations(c: &mut Criterion) {
             &log_size,
             |b, _| {
                 b.iter(|| {
-                    let guard = broker.lock().unwrap();
-                    let topic = guard.topic("proof-bench").unwrap();
-                    let partition = topic.partition(0).unwrap();
+                    let topic = broker.topic("proof-bench").unwrap();
+                    let part_arc = topic.partition(0).unwrap();
+                    let partition = part_arc.read().unwrap();
                     let o = offset % partition.next_offset();
                     let proof = partition.proof(o).unwrap().unwrap();
                     let valid = MerkleTree::verify_proof(&proof, partition.store()).unwrap();

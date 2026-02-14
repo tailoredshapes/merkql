@@ -1,3 +1,4 @@
+use crate::compression::Compression;
 use crate::hash::Hash;
 use crate::partition::Partition;
 use crate::record::Record;
@@ -5,6 +6,19 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    pub max_records: Option<u64>,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        RetentionConfig { max_records: None }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicConfig {
@@ -13,17 +27,23 @@ pub struct TopicConfig {
 }
 
 /// A named collection of partitions with key-hash or round-robin routing.
-#[allow(dead_code)]
 pub struct Topic {
     config: TopicConfig,
     dir: PathBuf,
-    partitions: Vec<Partition>,
-    round_robin_counter: u32,
+    partitions: Vec<Arc<RwLock<Partition>>>,
+    round_robin_counter: AtomicU32,
+    retention: RetentionConfig,
 }
 
 impl Topic {
     /// Open or create a topic at the given directory.
-    pub fn open(name: &str, num_partitions: u32, dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn open(
+        name: &str,
+        num_partitions: u32,
+        dir: impl Into<PathBuf>,
+        compression: Compression,
+        retention: RetentionConfig,
+    ) -> Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir).context("creating topic dir")?;
 
@@ -43,20 +63,21 @@ impl Topic {
 
         let mut partitions = Vec::new();
         for i in 0..num_partitions {
-            let part = Partition::open(i, parts_dir.join(i.to_string()))?;
-            partitions.push(part);
+            let part = Partition::open(i, parts_dir.join(i.to_string()), compression)?;
+            partitions.push(Arc::new(RwLock::new(part)));
         }
 
         Ok(Topic {
             config,
             dir,
             partitions,
-            round_robin_counter: 0,
+            round_robin_counter: AtomicU32::new(0),
+            retention,
         })
     }
 
     /// Reopen an existing topic from its metadata.
-    pub fn reopen(dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn reopen(dir: impl Into<PathBuf>, compression: Compression) -> Result<Self> {
         let dir = dir.into();
         let meta_path = dir.join("meta.bin");
         let meta_bytes = fs::read(&meta_path).context("reading topic metadata")?;
@@ -66,15 +87,16 @@ impl Topic {
         let parts_dir = dir.join("partitions");
         let mut partitions = Vec::new();
         for i in 0..config.num_partitions {
-            let part = Partition::open(i, parts_dir.join(i.to_string()))?;
-            partitions.push(part);
+            let part = Partition::open(i, parts_dir.join(i.to_string()), compression)?;
+            partitions.push(Arc::new(RwLock::new(part)));
         }
 
         Ok(Topic {
             config,
             dir,
             partitions,
-            round_robin_counter: 0,
+            round_robin_counter: AtomicU32::new(0),
+            retention: RetentionConfig::default(),
         })
     }
 
@@ -87,19 +109,30 @@ impl Topic {
     }
 
     /// Append a record, routing by key hash or round-robin.
-    pub fn append(&mut self, record: &mut Record) -> Result<u64> {
+    /// Takes &self (not &mut self) — acquires write lock on target partition only.
+    pub fn append(&self, record: &mut Record) -> Result<u64> {
         let partition_id = self.route(&record.key);
-        self.partitions[partition_id as usize].append(record)
+        let part_arc = &self.partitions[partition_id as usize];
+        let mut part = part_arc
+            .write()
+            .map_err(|e| anyhow::anyhow!("partition write lock: {}", e))?;
+        let offset = part.append(record)?;
+
+        // Apply retention if configured
+        if let Some(max_records) = self.retention.max_records {
+            let total = part.next_offset() - part.min_valid_offset();
+            if total > max_records {
+                let new_min = part.next_offset() - max_records;
+                part.advance_retention(new_min)?;
+            }
+        }
+
+        Ok(offset)
     }
 
-    /// Get a partition by ID.
-    pub fn partition(&self, id: u32) -> Option<&Partition> {
-        self.partitions.get(id as usize)
-    }
-
-    /// Get a mutable partition by ID.
-    pub fn partition_mut(&mut self, id: u32) -> Option<&mut Partition> {
-        self.partitions.get_mut(id as usize)
+    /// Get a partition by ID. Returns Arc<RwLock<Partition>> clone.
+    pub fn partition(&self, id: u32) -> Option<Arc<RwLock<Partition>>> {
+        self.partitions.get(id as usize).cloned()
     }
 
     /// Get all partition IDs.
@@ -107,7 +140,7 @@ impl Topic {
         (0..self.config.num_partitions).collect()
     }
 
-    fn route(&mut self, key: &Option<String>) -> u32 {
+    fn route(&self, key: &Option<String>) -> u32 {
         match key {
             Some(k) => {
                 let hash = Hash::digest(k.as_bytes());
@@ -115,8 +148,8 @@ impl Topic {
                 val % self.config.num_partitions
             }
             None => {
-                let id = self.round_robin_counter % self.config.num_partitions;
-                self.round_robin_counter = self.round_robin_counter.wrapping_add(1);
+                let id = self.round_robin_counter.fetch_add(1, Ordering::Relaxed)
+                    % self.config.num_partitions;
                 id
             }
         }
@@ -142,7 +175,14 @@ mod tests {
     #[test]
     fn single_partition_routing() {
         let dir = tempfile::tempdir().unwrap();
-        let mut topic = Topic::open("test", 1, dir.path().join("topic")).unwrap();
+        let topic = Topic::open(
+            "test",
+            1,
+            dir.path().join("topic"),
+            Compression::None,
+            RetentionConfig::default(),
+        )
+        .unwrap();
 
         let mut r1 = make_record("test", Some("k1"), "v1");
         let mut r2 = make_record("test", None, "v2");
@@ -157,7 +197,14 @@ mod tests {
     #[test]
     fn key_hash_consistency() {
         let dir = tempfile::tempdir().unwrap();
-        let mut topic = Topic::open("test", 4, dir.path().join("topic")).unwrap();
+        let topic = Topic::open(
+            "test",
+            4,
+            dir.path().join("topic"),
+            Compression::None,
+            RetentionConfig::default(),
+        )
+        .unwrap();
 
         // Same key should always route to the same partition
         let mut r1 = make_record("test", Some("user-42"), "v1");
@@ -170,7 +217,14 @@ mod tests {
     #[test]
     fn round_robin_distribution() {
         let dir = tempfile::tempdir().unwrap();
-        let mut topic = Topic::open("test", 3, dir.path().join("topic")).unwrap();
+        let topic = Topic::open(
+            "test",
+            3,
+            dir.path().join("topic"),
+            Compression::None,
+            RetentionConfig::default(),
+        )
+        .unwrap();
 
         let mut partitions_used = vec![0u32; 3];
         for i in 0..9 {
@@ -189,13 +243,20 @@ mod tests {
         let topic_dir = dir.path().join("topic");
 
         {
-            let mut topic = Topic::open("my-topic", 2, &topic_dir).unwrap();
+            let topic = Topic::open(
+                "my-topic",
+                2,
+                &topic_dir,
+                Compression::None,
+                RetentionConfig::default(),
+            )
+            .unwrap();
             let mut rec = make_record("my-topic", Some("k"), "v");
             topic.append(&mut rec).unwrap();
         }
 
         // Reopen
-        let topic = Topic::reopen(&topic_dir).unwrap();
+        let topic = Topic::reopen(&topic_dir, Compression::None).unwrap();
         assert_eq!(topic.name(), "my-topic");
         assert_eq!(topic.num_partitions(), 2);
     }

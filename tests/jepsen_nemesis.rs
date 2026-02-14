@@ -54,20 +54,20 @@ fn truncated_offsets_index() {
     );
 }
 
-/// Nemesis 4: Missing HEAD — delete HEAD file and reopen.
+/// Nemesis 4: Missing tree.snapshot — delete snapshot file and reopen.
 /// Asserts: broker reopens, all records readable, new appends succeed.
 #[test]
-fn missing_head() {
+fn missing_snapshot() {
     let dir = tempfile::tempdir().unwrap();
-    let result = check_missing_head(dir.path(), 100);
+    let result = check_missing_snapshot(dir.path(), 100);
     assert!(
         result.passed,
-        "Missing HEAD: {}",
+        "Missing snapshot: {}",
         result.details
     );
     assert_eq!(
         result.records_after, 100,
-        "All records should be readable without HEAD"
+        "All records should be readable without snapshot"
     );
 }
 

@@ -18,6 +18,8 @@ pub fn setup_broker(dir: &Path, partitions: u32) -> BrokerRef {
         data_dir: dir.to_path_buf(),
         default_partitions: partitions,
         auto_create_topics: true,
+        compression: merkql::compression::Compression::None,
+        default_retention: merkql::topic::RetentionConfig::default(),
     };
     Broker::open(config).unwrap()
 }
@@ -27,6 +29,8 @@ pub fn broker_config(dir: &Path) -> BrokerConfig {
         data_dir: dir.to_path_buf(),
         default_partitions: 1,
         auto_create_topics: true,
+        compression: merkql::compression::Compression::None,
+        default_retention: merkql::topic::RetentionConfig::default(),
     }
 }
 
@@ -201,12 +205,12 @@ pub fn check_total_order(dir: &Path, n: usize, partitions: u32) -> PropertyResul
     let broker = setup_broker(dir, partitions);
     produce_n(&broker, "total-order", n, |i| format!("v{}", i), |_| None);
 
-    let guard = broker.lock().unwrap();
-    let topic = guard.topic("total-order").unwrap();
+    let topic = broker.topic("total-order").unwrap();
     let mut total_verified = 0;
 
     for pid in topic.partition_ids() {
-        let partition = topic.partition(pid).unwrap();
+        let part_arc = topic.partition(pid).unwrap();
+        let partition = part_arc.read().unwrap();
         let count = partition.next_offset();
         for offset in 0..count {
             let record = partition.read(offset).unwrap();
@@ -348,12 +352,12 @@ pub fn check_merkle_integrity(dir: &Path, n: usize, partitions: u32) -> Property
     let broker = setup_broker(dir, partitions);
     produce_n(&broker, "merkle-int", n, |i| format!("v{}", i), |_| None);
 
-    let guard = broker.lock().unwrap();
-    let topic = guard.topic("merkle-int").unwrap();
+    let topic = broker.topic("merkle-int").unwrap();
     let mut verified = 0;
 
     for pid in topic.partition_ids() {
-        let partition = topic.partition(pid).unwrap();
+        let part_arc = topic.partition(pid).unwrap();
+        let partition = part_arc.read().unwrap();
         for offset in 0..partition.next_offset() {
             let proof = partition.proof(offset).unwrap();
             assert!(proof.is_some(), "no proof for partition {} offset {}", pid, offset);
@@ -390,9 +394,9 @@ pub fn check_no_data_loss(dir: &Path, n: usize) -> PropertyResult {
         let record = producer.send(&pr).unwrap();
 
         // Immediately read back
-        let guard = broker.lock().unwrap();
-        let topic = guard.topic("no-loss").unwrap();
-        let partition = topic.partition(record.partition).unwrap();
+        let topic = broker.topic("no-loss").unwrap();
+        let part_arc = topic.partition(record.partition).unwrap();
+        let partition = part_arc.read().unwrap();
         let read_back = partition.read(record.offset).unwrap();
         if read_back.is_none() || read_back.unwrap().value != format!("v{}", i) {
             failures += 1;
@@ -793,11 +797,11 @@ pub fn check_truncated_snapshot(dir: &Path, n: usize) -> NemesisResult {
     match result {
         Ok(broker) => {
             // Broker reopened — check what we got
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("trunc-snap");
+            let topic = broker.topic("trunc-snap");
             let records_after = match topic {
                 Some(t) => {
-                    let partition = t.partition(0).unwrap();
+                    let part_arc = t.partition(0).unwrap();
+                    let partition = part_arc.read().unwrap();
                     let mut readable = 0;
                     for offset in 0..partition.next_offset() {
                         if partition.read(offset).unwrap().is_some() {
@@ -854,9 +858,9 @@ pub fn check_truncated_index(dir: &Path, n: usize) -> NemesisResult {
     let result = Broker::open(broker_config(dir));
     match result {
         Ok(broker) => {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("trunc-idx").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("trunc-idx").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             let reported_offset = partition.next_offset();
 
             let mut readable = 0;
@@ -898,24 +902,24 @@ pub fn check_truncated_index(dir: &Path, n: usize) -> NemesisResult {
     }
 }
 
-/// Nemesis 4: Missing HEAD — delete HEAD file and reopen.
-pub fn check_missing_head(dir: &Path, n: usize) -> NemesisResult {
+/// Nemesis 4: Missing tree.snapshot — delete snapshot file and reopen.
+pub fn check_missing_snapshot(dir: &Path, n: usize) -> NemesisResult {
     {
         let broker = Broker::open(broker_config(dir)).unwrap();
-        produce_n(&broker, "no-head", n, |i| format!("v{}", i), |_| None);
+        produce_n(&broker, "no-snap", n, |i| format!("v{}", i), |_| None);
     }
 
-    let head_path = find_file_recursive(dir, "HEAD");
-    assert!(head_path.is_some(), "HEAD should exist after producing records");
-    let head_path = head_path.unwrap();
-    std::fs::remove_file(&head_path).unwrap();
+    let snapshot_path = find_file_recursive(dir, "tree.snapshot");
+    assert!(snapshot_path.is_some(), "tree.snapshot should exist after producing records");
+    let snapshot_path = snapshot_path.unwrap();
+    std::fs::remove_file(&snapshot_path).unwrap();
 
     let result = Broker::open(broker_config(dir));
     match result {
         Ok(broker) => {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("no-head").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("no-snap").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
 
             let mut readable = 0;
             for offset in 0..partition.next_offset() {
@@ -925,16 +929,17 @@ pub fn check_missing_head(dir: &Path, n: usize) -> NemesisResult {
             }
 
             // Try appending new records
-            drop(guard);
+            drop(partition);
+            drop(part_arc);
             let producer = Broker::producer(&broker);
-            let pr = ProducerRecord::new("no-head", None, "after-head-delete");
+            let pr = ProducerRecord::new("no-snap", None, "after-snapshot-delete");
             let append_ok = producer.send(&pr).is_ok();
 
             let passed = readable == n && append_ok;
 
             NemesisResult {
-                name: "Missing HEAD".to_string(),
-                fault: "Delete HEAD file and reopen".to_string(),
+                name: "Missing Snapshot".to_string(),
+                fault: "Delete tree.snapshot file and reopen".to_string(),
                 outcome: if passed { "recovered".to_string() } else { "data_loss".to_string() },
                 records_before: n,
                 records_after: readable,
@@ -947,8 +952,8 @@ pub fn check_missing_head(dir: &Path, n: usize) -> NemesisResult {
         }
         Err(e) => {
             NemesisResult {
-                name: "Missing HEAD".to_string(),
-                fault: "Delete HEAD file and reopen".to_string(),
+                name: "Missing Snapshot".to_string(),
+                fault: "Delete tree.snapshot file and reopen".to_string(),
                 outcome: "safe_failure".to_string(),
                 records_before: n,
                 records_after: 0,
@@ -982,9 +987,9 @@ pub fn check_index_ahead_of_snapshot(dir: &Path, n: usize) -> NemesisResult {
     let result = Broker::open(broker_config(dir));
     match result {
         Ok(broker) => {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("idx-ahead").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("idx-ahead").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
 
             let mut readable = 0;
             for offset in 0..partition.next_offset() {

@@ -1,15 +1,25 @@
-use crate::commit::Commit;
+use crate::compression::Compression;
 use crate::hash::Hash;
 use crate::record::Record;
 use crate::store::ObjectStore;
 use crate::tree::{MerkleTree, TreeSnapshot};
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::io::{BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 
 /// Fixed-width index entry: 32 bytes (SHA-256 hash of the record object).
 const INDEX_ENTRY_SIZE: usize = 32;
+
+/// Atomically write data to a file using temp+fsync+rename.
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut f = fs::File::create(&tmp).context("creating temp file for atomic write")?;
+    f.write_all(data).context("writing atomic data")?;
+    f.sync_all().context("syncing atomic write")?;
+    fs::rename(&tmp, path).context("renaming atomic write")?;
+    Ok(())
+}
 
 /// A single append-only partition backed by a merkle tree.
 pub struct Partition {
@@ -18,17 +28,18 @@ pub struct Partition {
     store: ObjectStore,
     tree: MerkleTree,
     next_offset: u64,
-    head: Option<Hash>,
+    index_writer: BufWriter<fs::File>,
+    min_valid_offset: u64,
 }
 
 impl Partition {
     /// Open or create a partition at the given directory.
-    pub fn open(id: u32, dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn open(id: u32, dir: impl Into<PathBuf>, compression: Compression) -> Result<Self> {
         let dir = dir.into();
         let objects_dir = dir.join("objects");
         fs::create_dir_all(&objects_dir).context("creating partition objects dir")?;
 
-        let store = ObjectStore::new(objects_dir);
+        let store = ObjectStore::new(objects_dir, compression);
 
         // Restore tree snapshot if it exists
         let snapshot_path = dir.join("tree.snapshot");
@@ -41,15 +52,6 @@ impl Partition {
             MerkleTree::new()
         };
 
-        // Restore HEAD
-        let head_path = dir.join("HEAD");
-        let head = if head_path.exists() {
-            let hex = fs::read_to_string(&head_path).context("reading HEAD")?;
-            Some(Hash::from_hex(hex.trim())?)
-        } else {
-            None
-        };
-
         // Determine next offset from index size
         let index_path = dir.join("offsets.idx");
         let next_offset = if index_path.exists() {
@@ -59,13 +61,31 @@ impl Partition {
             0
         };
 
+        // Restore retention marker
+        let retention_path = dir.join("retention.bin");
+        let min_valid_offset = if retention_path.exists() {
+            let data = fs::read(&retention_path).context("reading retention marker")?;
+            bincode::deserialize(&data).context("deserializing retention marker")?
+        } else {
+            0
+        };
+
+        // Open index file for persistent appending
+        let index_file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)
+            .context("opening offset index for append")?;
+        let index_writer = BufWriter::new(index_file);
+
         Ok(Partition {
             id,
             dir,
             store,
             tree,
             next_offset,
-            head,
+            index_writer,
+            min_valid_offset,
         })
     }
 
@@ -75,6 +95,10 @@ impl Partition {
 
     pub fn next_offset(&self) -> u64 {
         self.next_offset
+    }
+
+    pub fn min_valid_offset(&self) -> u64 {
+        self.min_valid_offset
     }
 
     /// Append a record to the partition, assigning the next sequential offset.
@@ -89,40 +113,74 @@ impl Partition {
         let record_hash = self.store.put(&record_bytes)?;
 
         // Append to merkle tree
-        let tree_hash = self.tree.append(record_hash, offset, &self.store)?;
+        self.tree.append(record_hash, offset, &self.store)?;
 
-        // Append to offset index
-        let index_path = self.dir.join("offsets.idx");
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&index_path)
-            .context("opening offset index")?;
-        file.write_all(&record_hash.0)
+        // Append to offset index (buffered)
+        self.index_writer
+            .write_all(&record_hash.0)
             .context("writing index entry")?;
 
-        // Create commit
-        let tree_root = self.tree.root(&self.store)?.unwrap_or(tree_hash);
-        let commit = Commit::new(self.head, tree_root, (offset, offset));
-        let commit_bytes = commit.serialize();
-        let commit_hash = self.store.put(&commit_bytes)?;
-        self.head = Some(commit_hash);
+        // Flush and fsync index
+        self.index_writer.flush().context("flushing index")?;
+        self.index_writer
+            .get_ref()
+            .sync_all()
+            .context("syncing index")?;
 
-        // Persist HEAD
-        fs::write(self.dir.join("HEAD"), commit_hash.to_hex()).context("writing HEAD")?;
-
-        // Persist tree snapshot
+        // Persist tree snapshot atomically
         let snap = self.tree.snapshot();
         let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
-        fs::write(self.dir.join("tree.snapshot"), &snap_bytes).context("writing tree snapshot")?;
+        atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
 
         self.next_offset += 1;
         Ok(offset)
     }
 
+    /// Append a batch of records. Amortizes fsync and snapshot writes.
+    /// Returns the assigned offsets.
+    pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<u64>> {
+        let mut offsets = Vec::with_capacity(records.len());
+
+        for record in records.iter_mut() {
+            let offset = self.next_offset;
+            record.offset = offset;
+            record.partition = self.id;
+
+            // Store the record
+            let record_bytes = record.serialize();
+            let record_hash = self.store.put(&record_bytes)?;
+
+            // Append to merkle tree
+            self.tree.append(record_hash, offset, &self.store)?;
+
+            // Buffer index entry
+            self.index_writer
+                .write_all(&record_hash.0)
+                .context("writing index entry")?;
+
+            self.next_offset += 1;
+            offsets.push(offset);
+        }
+
+        // Single flush + fsync for entire batch
+        self.index_writer.flush().context("flushing index")?;
+        self.index_writer
+            .get_ref()
+            .sync_all()
+            .context("syncing index")?;
+
+        // Single atomic snapshot write for entire batch
+        let snap = self.tree.snapshot();
+        let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
+        atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
+
+        Ok(offsets)
+    }
+
     /// Read a single record by offset. O(1) via the index.
+    /// Returns None for offsets below min_valid_offset or >= next_offset.
     pub fn read(&self, offset: u64) -> Result<Option<Record>> {
-        if offset >= self.next_offset {
+        if offset >= self.next_offset || offset < self.min_valid_offset {
             return Ok(None);
         }
 
@@ -134,9 +192,10 @@ impl Partition {
 
     /// Read a range of records [from, to) (exclusive end).
     pub fn read_range(&self, from: u64, to: u64) -> Result<Vec<Record>> {
+        let start = from.max(self.min_valid_offset);
         let end = to.min(self.next_offset);
         let mut records = Vec::new();
-        for offset in from..end {
+        for offset in start..end {
             if let Some(record) = self.read(offset)? {
                 records.push(record);
             }
@@ -161,6 +220,17 @@ impl Partition {
 
     pub fn store(&self) -> &ObjectStore {
         &self.store
+    }
+
+    /// Advance the retention window. Records below new_min will return None on read.
+    pub fn advance_retention(&mut self, new_min: u64) -> Result<()> {
+        if new_min > self.min_valid_offset {
+            self.min_valid_offset = new_min;
+            let data =
+                bincode::serialize(&self.min_valid_offset).context("serializing retention")?;
+            atomic_write(&self.dir.join("retention.bin"), &data)?;
+        }
+        Ok(())
     }
 
     fn read_index_entry(&self, offset: u64) -> Result<Hash> {
@@ -194,7 +264,7 @@ mod tests {
     #[test]
     fn sequential_offsets() {
         let dir = tempfile::tempdir().unwrap();
-        let mut part = Partition::open(0, dir.path().join("p0")).unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
 
         for i in 0..5 {
             let mut rec = make_record("t", &format!("val-{}", i));
@@ -207,7 +277,7 @@ mod tests {
     #[test]
     fn read_write() {
         let dir = tempfile::tempdir().unwrap();
-        let mut part = Partition::open(0, dir.path().join("p0")).unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
 
         let mut rec = make_record("t", "hello");
         part.append(&mut rec).unwrap();
@@ -220,7 +290,7 @@ mod tests {
     #[test]
     fn read_range_works() {
         let dir = tempfile::tempdir().unwrap();
-        let mut part = Partition::open(0, dir.path().join("p0")).unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
 
         for i in 0..10 {
             let mut rec = make_record("t", &format!("v{}", i));
@@ -240,7 +310,7 @@ mod tests {
 
         // Write some records
         {
-            let mut part = Partition::open(0, &part_dir).unwrap();
+            let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
             for i in 0..3 {
                 let mut rec = make_record("t", &format!("v{}", i));
                 part.append(&mut rec).unwrap();
@@ -248,7 +318,7 @@ mod tests {
         }
 
         // Reopen and verify
-        let mut part = Partition::open(0, &part_dir).unwrap();
+        let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
         assert_eq!(part.next_offset(), 3);
 
         let r = part.read(1).unwrap().unwrap();
@@ -263,7 +333,7 @@ mod tests {
     #[test]
     fn merkle_root_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let mut part = Partition::open(0, dir.path().join("p0")).unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
 
         let mut rec = make_record("t", "first");
         part.append(&mut rec).unwrap();
@@ -279,7 +349,101 @@ mod tests {
     #[test]
     fn read_out_of_bounds() {
         let dir = tempfile::tempdir().unwrap();
-        let part = Partition::open(0, dir.path().join("p0")).unwrap();
+        let part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
         assert!(part.read(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn batch_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
+
+        let mut records: Vec<Record> = (0..5)
+            .map(|i| make_record("t", &format!("batch-{}", i)))
+            .collect();
+        let offsets = part.append_batch(&mut records).unwrap();
+
+        assert_eq!(offsets, vec![0, 1, 2, 3, 4]);
+        assert_eq!(part.next_offset(), 5);
+
+        for i in 0..5 {
+            let r = part.read(i).unwrap().unwrap();
+            assert_eq!(r.value, format!("batch-{}", i));
+        }
+    }
+
+    #[test]
+    fn retention_hides_old_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
+
+        for i in 0..10 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        part.advance_retention(5).unwrap();
+        assert_eq!(part.min_valid_offset(), 5);
+
+        // Old records return None
+        for i in 0..5 {
+            assert!(part.read(i).unwrap().is_none());
+        }
+        // New records still readable
+        for i in 5..10 {
+            assert!(part.read(i).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn retention_persists_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        {
+            let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
+            for i in 0..10 {
+                let mut rec = make_record("t", &format!("v{}", i));
+                part.append(&mut rec).unwrap();
+            }
+            part.advance_retention(5).unwrap();
+        }
+
+        let part = Partition::open(0, &part_dir, Compression::None).unwrap();
+        assert_eq!(part.min_valid_offset(), 5);
+        assert!(part.read(4).unwrap().is_none());
+        assert!(part.read(5).unwrap().is_some());
+    }
+
+    #[test]
+    fn read_range_respects_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
+
+        for i in 0..10 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        part.advance_retention(3).unwrap();
+        let range = part.read_range(0, 10).unwrap();
+        assert_eq!(range.len(), 7);
+        assert_eq!(range[0].value, "v3");
+    }
+
+    #[test]
+    fn compression_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::Lz4).unwrap();
+
+        for i in 0..5 {
+            let mut rec = make_record("t", &format!("compressed-{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        for i in 0..5 {
+            let r = part.read(i).unwrap().unwrap();
+            assert_eq!(r.value, format!("compressed-{}", i));
+        }
     }
 }

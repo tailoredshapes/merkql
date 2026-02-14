@@ -72,10 +72,10 @@ fn generate_jepsen_report() {
         nemesis.push(check_truncated_index(dir.path(), 100));
     }
 
-    eprintln!("Running nemesis: Missing HEAD...");
+    eprintln!("Running nemesis: Missing Snapshot...");
     {
         let dir = tempfile::tempdir().unwrap();
-        nemesis.push(check_missing_head(dir.path(), 100));
+        nemesis.push(check_missing_snapshot(dir.path(), 100));
     }
 
     eprintln!("Running nemesis: Index Ahead of Snapshot...");
@@ -123,9 +123,9 @@ fn generate_jepsen_report() {
         produce_n(&broker, "bench-read", 10_000, |i| format!("v{}", i), |_| None);
 
         benchmarks.push(measure_latency("Read Latency (sequential)", 10_000, |i| {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("bench-read").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("bench-read").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             let _ = partition.read(i as u64).unwrap();
         }));
     }
@@ -137,9 +137,9 @@ fn generate_jepsen_report() {
         produce_n(&broker, "bench-read-tp", 10_000, |i| format!("v{}", i), |_| None);
 
         benchmarks.push(measure_latency("Read Throughput (10K sequential scan)", 10_000, |i| {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("bench-read-tp").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("bench-read-tp").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             let _ = partition.read(i as u64).unwrap();
         }));
     }
@@ -151,9 +151,9 @@ fn generate_jepsen_report() {
         produce_n(&broker, "bench-proof", 10_000, |i| format!("v{}", i), |_| None);
 
         benchmarks.push(measure_latency("Proof Generate + Verify (10K log)", 1000, |i| {
-            let guard = broker.lock().unwrap();
-            let topic = guard.topic("bench-proof").unwrap();
-            let partition = topic.partition(0).unwrap();
+            let topic = broker.topic("bench-proof").unwrap();
+            let part_arc = topic.partition(0).unwrap();
+            let partition = part_arc.read().unwrap();
             let offset = (i * 7) as u64 % partition.next_offset(); // prime stride
             let proof = partition.proof(offset).unwrap().unwrap();
             let _ = merkql::tree::MerkleTree::verify_proof(&proof, partition.store()).unwrap();

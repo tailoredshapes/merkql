@@ -2,13 +2,24 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Identifies a specific topic-partition pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TopicPartition {
     pub topic: String,
     pub partition: u32,
+}
+
+/// Atomically write data to a file using temp+fsync+rename.
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut f = fs::File::create(&tmp).context("creating temp file for atomic write")?;
+    f.write_all(data).context("writing atomic data")?;
+    f.sync_all().context("syncing atomic write")?;
+    fs::rename(&tmp, path).context("renaming atomic write")?;
+    Ok(())
 }
 
 /// Persists per-TopicPartition committed offsets for a consumer group.
@@ -57,7 +68,7 @@ impl ConsumerGroup {
 
     fn persist(&self) -> Result<()> {
         let data = bincode::serialize(&self.offsets).context("serializing offsets")?;
-        fs::write(self.dir.join("offsets.bin"), &data).context("writing offsets")?;
+        atomic_write(&self.dir.join("offsets.bin"), &data).context("writing offsets")?;
         Ok(())
     }
 }
