@@ -1,0 +1,304 @@
+mod common;
+
+use common::*;
+use merkql::broker::{Broker, BrokerConfig};
+use merkql::consumer::{ConsumerConfig, OffsetReset};
+use merkql::record::ProducerRecord;
+use merkql::tree::MerkleTree;
+use proptest::prelude::*;
+use std::collections::HashSet;
+use std::time::Duration;
+
+fn broker_config(dir: &std::path::Path, partitions: u32) -> BrokerConfig {
+    BrokerConfig {
+        data_dir: dir.to_path_buf(),
+        default_partitions: partitions,
+        auto_create_topics: true,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operations for random sequence generation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Op {
+    Append { value: String },
+    Read { offset: u64 },
+    Commit,
+    CloseReopen,
+}
+
+fn op_strategy(max_offset: u64) -> impl Strategy<Value = Op> {
+    prop_oneof![
+        70 => "[a-zA-Z0-9]{1,200}".prop_map(|v| Op::Append { value: v }),
+        15 => (0..=max_offset).prop_map(|o| Op::Read { offset: o }),
+        10 => Just(Op::Commit),
+        5 => Just(Op::CloseReopen),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Property 1: Random operations preserve invariants
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    #[test]
+    fn random_ops_preserve_invariants(
+        ops in proptest::collection::vec(op_strategy(200), 10..200),
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+        let mut appended_values: Vec<String> = Vec::new();
+
+        // Create 3 topics up front
+        {
+            let mut guard = broker.lock().unwrap();
+            guard.create_topic("prop-t0", 1).unwrap();
+            guard.create_topic("prop-t1", 1).unwrap();
+            guard.create_topic("prop-t2", 1).unwrap();
+        }
+
+        let topics = ["prop-t0", "prop-t1", "prop-t2"];
+        let mut consumer_created = false;
+
+        for op in &ops {
+            match op {
+                Op::Append { value } => {
+                    let topic = topics[appended_values.len() % 3];
+                    let producer = Broker::producer(&broker);
+                    let pr = ProducerRecord::new(topic, None, value.clone());
+                    let record = producer.send(&pr).unwrap();
+                    // Verify offset is sequential within partition
+                    let guard = broker.lock().unwrap();
+                    let t = guard.topic(topic).unwrap();
+                    let p = t.partition(record.partition).unwrap();
+                    prop_assert!(record.offset < p.next_offset());
+                    appended_values.push(value.clone());
+                }
+                Op::Read { offset } => {
+                    let guard = broker.lock().unwrap();
+                    for topic in &topics {
+                        if let Some(t) = guard.topic(topic) {
+                            let p = t.partition(0).unwrap();
+                            if *offset < p.next_offset() {
+                                let record = p.read(*offset).unwrap();
+                                prop_assert!(record.is_some());
+                            }
+                        }
+                    }
+                }
+                Op::Commit => {
+                    // Create consumer if needed and commit
+                    if !appended_values.is_empty() && !consumer_created {
+                        let mut consumer = Broker::consumer(
+                            &broker,
+                            ConsumerConfig {
+                                group_id: "prop-group".into(),
+                                auto_commit: false,
+                                offset_reset: OffsetReset::Earliest,
+                            },
+                        );
+                        let topic_refs: Vec<&str> = topics.iter().map(|s| *s).collect();
+                        consumer.subscribe(&topic_refs).unwrap();
+                        consumer.poll(Duration::from_millis(10)).unwrap();
+                        consumer.commit_sync().unwrap();
+                        consumer.close().unwrap();
+                        consumer_created = true;
+                    }
+                }
+                Op::CloseReopen => {
+                    drop(broker);
+                    broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+                    consumer_created = false;
+                }
+            }
+        }
+
+        // Final invariant checks:
+        // 1. Total order per partition
+        let guard = broker.lock().unwrap();
+        for topic in &topics {
+            if let Some(t) = guard.topic(topic) {
+                let p = t.partition(0).unwrap();
+                for offset in 0..p.next_offset() {
+                    let record = p.read(offset).unwrap();
+                    prop_assert!(record.is_some(), "gap at offset {}", offset);
+                    prop_assert_eq!(record.unwrap().offset, offset);
+                }
+            }
+        }
+
+        // 2. Proofs valid for all records
+        for topic in &topics {
+            if let Some(t) = guard.topic(topic) {
+                let p = t.partition(0).unwrap();
+                for offset in 0..p.next_offset() {
+                    if let Some(proof) = p.proof(offset).unwrap() {
+                        let valid = MerkleTree::verify_proof(&proof, p.store()).unwrap();
+                        prop_assert!(valid, "invalid proof at offset {}", offset);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 2: Payload size fidelity
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn payload_size_fidelity(
+        payload in "[\\x20-\\x7E]{1,65536}",
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let broker = setup_broker(dir.path(), 1);
+        let producer = Broker::producer(&broker);
+
+        let pr = ProducerRecord::new("fidelity", None, payload.clone());
+        let record = producer.send(&pr).unwrap();
+
+        let guard = broker.lock().unwrap();
+        let topic = guard.topic("fidelity").unwrap();
+        let partition = topic.partition(record.partition).unwrap();
+        let read_back = partition.read(record.offset).unwrap().unwrap();
+
+        prop_assert_eq!(&read_back.value, &payload, "payload not preserved");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 3: Multi-topic/partition invariants
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    #[test]
+    fn multi_topic_partition_invariants(
+        num_topics in 1usize..=5,
+        num_partitions in 1u32..=8,
+        num_records in 10usize..=200,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let broker = setup_broker(dir.path(), num_partitions);
+
+        // Create topics
+        let topic_names: Vec<String> = (0..num_topics).map(|i| format!("mt-{}", i)).collect();
+        {
+            let mut guard = broker.lock().unwrap();
+            for name in &topic_names {
+                guard.create_topic(name, num_partitions).unwrap();
+            }
+        }
+
+        // Produce records across all topics
+        let producer = Broker::producer(&broker);
+        for i in 0..num_records {
+            let topic = &topic_names[i % num_topics];
+            let pr = ProducerRecord::new(topic.as_str(), None, format!("v{}", i));
+            producer.send(&pr).unwrap();
+        }
+
+        // Verify invariants
+        let guard = broker.lock().unwrap();
+        for name in &topic_names {
+            let topic = guard.topic(name).unwrap();
+            for pid in topic.partition_ids() {
+                let partition = topic.partition(pid).unwrap();
+
+                // Total order
+                for offset in 0..partition.next_offset() {
+                    let record = partition.read(offset).unwrap();
+                    prop_assert!(record.is_some());
+                    let record = record.unwrap();
+                    prop_assert_eq!(record.offset, offset);
+                    prop_assert_eq!(record.partition, pid);
+                }
+
+                // Proof validity
+                for offset in 0..partition.next_offset() {
+                    if let Some(proof) = partition.proof(offset).unwrap() {
+                        let valid = MerkleTree::verify_proof(&proof, partition.store()).unwrap();
+                        prop_assert!(valid, "invalid proof for {}/p{}/o{}", name, pid, offset);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 4: Multi-phase exactly-once
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    #[test]
+    fn multi_phase_exactly_once(
+        num_records in 50usize..=500,
+        num_phases in 2usize..=6,
+        reopen_between in proptest::bool::ANY,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+
+        // Produce all records
+        {
+            let producer = Broker::producer(&broker);
+            for i in 0..num_records {
+                let pr = ProducerRecord::new("eo-prop", None, format!("v{}", i));
+                producer.send(&pr).unwrap();
+            }
+        }
+
+        // Consume in phases
+        let mut all_consumed: Vec<String> = Vec::new();
+
+        for _phase in 0..num_phases {
+            if reopen_between {
+                drop(broker);
+                broker = Broker::open(broker_config(dir.path(), 1)).unwrap();
+            }
+
+            let mut consumer = Broker::consumer(
+                &broker,
+                ConsumerConfig {
+                    group_id: "eo-prop-group".into(),
+                    auto_commit: false,
+                    offset_reset: OffsetReset::Earliest,
+                },
+            );
+            consumer.subscribe(&["eo-prop"]).unwrap();
+            let records = consumer.poll(Duration::from_millis(100)).unwrap();
+            all_consumed.extend(records.iter().map(|r| r.value.clone()));
+            consumer.commit_sync().unwrap();
+            consumer.close().unwrap();
+        }
+
+        // Verify exactly-once
+        let expected: Vec<String> = (0..num_records).map(|i| format!("v{}", i)).collect();
+        let unique: HashSet<&String> = all_consumed.iter().collect();
+
+        prop_assert_eq!(
+            all_consumed.len(),
+            num_records,
+            "should consume exactly {} records, got {}",
+            num_records,
+            all_consumed.len()
+        );
+        prop_assert_eq!(
+            unique.len(),
+            num_records,
+            "should have no duplicates"
+        );
+        prop_assert_eq!(all_consumed, expected, "records should be in order");
+    }
+}

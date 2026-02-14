@@ -105,6 +105,84 @@ assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
 | `Broker::producer(broker)` | `new KafkaProducer<>(props)` | Send records |
 | `producer.send(record)` | `producer.send(record)` | Auto-creates topics |
 
+## Correctness Verification
+
+merkql includes a Jepsen-style test suite that makes data-backed claims about correctness properties at scale, injects faults, and exercises random operation sequences via property-based testing.
+
+### Properties Verified
+
+| Property | Claim | Sample Size |
+|---|---|---|
+| **Total Order** | Partition offsets are monotonically increasing and gap-free | 10,000 records across 4 partitions |
+| **Durability** | All records survive broker close/reopen cycles | 4,998 records across 3 reopen cycles |
+| **Exactly-Once** | Consumer groups deliver every record exactly once across commit/restart | 1,000 records across 4 phases |
+| **Merkle Integrity** | 100% of records have valid inclusion proofs | 10,000 proofs across 4 partitions |
+| **No Data Loss** | Every confirmed append is immediately readable | 5,000 records verified immediately after write |
+| **Byte Fidelity** | Values preserved exactly for edge-case payloads | 16 payloads (empty, unicode, 64KB, null bytes, boundary lengths) |
+
+### Fault Injection (Nemesis)
+
+| Fault | Behavior |
+|---|---|
+| **Crash (drop without close)** | All 1,000 records survive 10 ungraceful drop cycles |
+| **Truncated tree.snapshot** | Broker refuses to reopen (safe failure) |
+| **Truncated offsets.idx** | Broker reopens with N-1 records (loses partial entry) |
+| **Missing HEAD** | Broker reopens, all records readable, new appends succeed |
+| **Index ahead of snapshot** | Records readable, 1 proof error at the crash boundary |
+
+### Property-Based Testing
+
+50-100 proptest cases per family:
+
+- **Random operation sequences** — Append/Read/Commit/CloseReopen across 3 topics, verify total order and proof validity
+- **Payload fidelity** — Random printable ASCII 1B-64KB, exact preservation
+- **Multi-topic/partition** — 1-5 topics x 1-8 partitions x 10-200 records, total order and proof validity
+- **Multi-phase exactly-once** — 50-500 records, 2-6 phases, optional broker reopen between phases
+
+### Performance
+
+Measured on the Jepsen report runner (unoptimized build):
+
+| Operation | P50 | P95 | P99 | Throughput |
+|---|---|---|---|---|
+| Append (256B) | 139 us | 193 us | 263 us | 6,825 ops/s |
+| Read (sequential) | 8 us | 9 us | 12 us | 113,241 ops/s |
+| Proof generate + verify (10K log) | 516 us | 596 us | 804 us | 1,897 ops/s |
+| Broker reopen (10K records) | 28 us | 32 us | 72 us | — |
+
+Optimized build (Criterion):
+
+| Operation | Time |
+|---|---|
+| Append (256B payload) | 103 us |
+| Append throughput (256KB payload) | 948 MiB/s |
+| Read latency (random access, 10K log) | 4.8 us |
+| Read throughput (10K sequential scan) | 141K elem/s |
+| Proof generate + verify (10K log) | 149 us |
+| Broker reopen (50K records) | 28 us |
+
+### Running the Test Suite
+
+```bash
+# All tests (65 total)
+cargo test
+
+# Jepsen checkers only
+cargo test --test jepsen_checkers
+
+# Property-based tests
+cargo test --test jepsen_proptest
+
+# Fault injection (use --nocapture to see nemesis observations)
+cargo test --test jepsen_nemesis -- --nocapture
+
+# Full JSON report (stdout + target/jepsen-report.json)
+cargo test --test jepsen_report -- --nocapture
+
+# Criterion benchmarks (HTML report in target/criterion/)
+cargo bench
+```
+
 ## Building
 
 ```bash
