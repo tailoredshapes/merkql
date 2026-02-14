@@ -1,21 +1,132 @@
 # merkql
 
-Merkle tree backed persistent log with Kafka-compatible topic/partition/consumer-group semantics.
+**Kafka semantics. Merkle integrity. Zero infrastructure.**
 
-merkql provides an embedded, file-based alternative to Apache Kafka for event streaming workloads. Each partition is a content-addressed merkle tree, giving you cryptographic integrity verification and tamper detection on top of standard log semantics.
+merkql is an embedded event log for Rust. It gives you topics, partitions, consumer groups, and offset management — the parts of Kafka you actually use — backed by a content-addressed merkle tree that makes every record cryptographically verifiable.
+
+No JVM. No ZooKeeper. No network. Just a directory on disk.
+
+```rust
+let broker = Broker::open(BrokerConfig::new("/tmp/events")).unwrap();
+
+let producer = Broker::producer(&broker);
+producer.send(&ProducerRecord::new("orders", Some("order-42".into()),
+    r#"{"item":"widget","qty":5}"#)).unwrap();
+
+let mut consumer = Broker::consumer(&broker, ConsumerConfig {
+    group_id: "billing".into(),
+    auto_commit: false,
+    offset_reset: OffsetReset::Earliest,
+});
+consumer.subscribe(&["orders"]).unwrap();
+let records = consumer.poll(Duration::from_millis(100)).unwrap();
+consumer.commit_sync().unwrap();
+```
+
+## Why merkql
+
+**You need event streaming but not a cluster.** Kafka is the right abstraction — append-only logs, consumer groups, offset tracking — but running a Kafka cluster for a single-node service, an embedded device, or your integration tests is a tax on your time and infrastructure.
+
+**You need to prove your data hasn't been tampered with.** Every partition is a merkle tree. Every record gets a cryptographic inclusion proof. You can verify that a specific record existed at a specific offset without trusting anything except the math. This matters for audit logs, compliance records, financial transactions, and any system where someone might later ask "how do we know this data is authentic?"
+
+**You need it to not lose data.** Every metadata write uses atomic temp+fsync+rename. The index is fsynced on every write. Jepsen-style fault injection tests verify recovery from crashes, truncated files, and missing snapshots. The test suite doesn't just observe behavior — it asserts correctness.
+
+## Use Cases
+
+### Tamper-evident audit logs
+
+Regulatory environments (SOX, HIPAA, PCI-DSS, GDPR) require demonstrating that audit records haven't been modified after the fact. merkql gives you a cryptographic proof for every record in the log — you can hand an auditor an inclusion proof and a root hash and they can independently verify the record's authenticity without access to your systems.
+
+```rust
+// Write an audit event
+producer.send(&ProducerRecord::new("audit",
+    Some("user-1001".into()),
+    r#"{"action":"access_patient_record","record_id":"R-2847"}"#
+)).unwrap();
+
+// Later: generate a proof for any record
+let topic = broker.topic("audit").unwrap();
+let partition = topic.partition(0).unwrap().read().unwrap();
+let proof = partition.proof(offset).unwrap().unwrap();
+
+// Anyone can verify this proof independently
+assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
+```
+
+### Event sourcing without infrastructure
+
+Event-sourced applications need an append-only log with consumer groups and offset tracking. merkql provides this as a library — no Docker containers, no cluster management, no network configuration. Your event store starts when your process starts and stops when it stops.
+
+```rust
+let config = BrokerConfig {
+    default_retention: RetentionConfig { max_records: Some(100_000) },
+    compression: Compression::Lz4,
+    ..BrokerConfig::new("./data/events")
+};
+let broker = Broker::open(config).unwrap();
+
+// Domain events go to topics
+producer.send(&ProducerRecord::new("orders.created", Some(order_id.into()), payload)).unwrap();
+producer.send(&ProducerRecord::new("orders.shipped", Some(order_id.into()), payload)).unwrap();
+
+// Each projection gets its own consumer group with independent progress
+let mut projections = Broker::consumer(&broker, ConsumerConfig {
+    group_id: "order-summary-projection".into(),
+    auto_commit: false,
+    offset_reset: OffsetReset::Earliest,
+});
+```
+
+### Integration testing
+
+Replace a real Kafka cluster in your test suite. merkql uses the same produce/subscribe/poll/commit lifecycle, so your test code exercises the same consumer group logic as production — without Docker, without port conflicts, without test isolation problems.
+
+```rust
+#[test]
+fn order_processing_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let broker = Broker::open(BrokerConfig::new(dir.path())).unwrap();
+
+    // Simulate upstream events
+    let producer = Broker::producer(&broker);
+    for order in test_orders() {
+        producer.send(&ProducerRecord::new("incoming-orders", None, order)).unwrap();
+    }
+
+    // Run your real consumer logic against it
+    let mut consumer = Broker::consumer(&broker, ConsumerConfig {
+        group_id: "order-processor".into(),
+        auto_commit: false,
+        offset_reset: OffsetReset::Earliest,
+    });
+    consumer.subscribe(&["incoming-orders"]).unwrap();
+    let records = consumer.poll(Duration::from_millis(100)).unwrap();
+
+    assert_eq!(records.len(), test_orders().len());
+}
+```
+
+### Edge and embedded systems
+
+Devices that need local event buffering with integrity guarantees — IoT gateways, POS terminals, medical devices, vehicle telemetry. merkql runs in-process with no network dependencies. LZ4 compression keeps storage manageable. Retention policies prevent unbounded growth. When connectivity is restored, consumers can drain the log and forward events upstream.
+
+### Local development
+
+Run your Kafka-based microservices locally without Docker Compose. Point your service at a merkql broker during development and get the same topic/partition/consumer-group semantics with zero startup time.
 
 ## Features
 
-- **Kafka-compatible API** — Topics, partitions, consumer groups, offset management, subscribe/poll/commit_sync/close lifecycle
-- **Merkle tree integrity** — Every partition is a merkle tree. Generate inclusion proofs, verify records, detect tampering
-- **Content-addressed storage** — Git-style object store with SHA-256 hashing. Identical data is never stored twice
-- **Crash-safe** — Atomic writes (temp+fsync+rename) for all metadata. Index fsync on every write. No data loss on crash
-- **Concurrent** — Fine-grained locking: `RwLock` per partition, `RwLock` on topic map, `Mutex` per consumer group. Readers never block readers. Writers only block their own partition
-- **LZ4 compression** — Optional per-broker transparent compression. Objects hashed before compression so merkle proofs work regardless of compression mode. Mixed-mode reads supported
-- **Retention** — Configurable `max_records` per topic. Old records become unreachable without ObjectStore GC
-- **Batch API** — `send_batch()` amortizes fsync (1 per batch instead of 1 per record)
-- **Persistent** — All state survives process restarts. Topics, partitions, offsets, and tree snapshots are durable on disk
-- **Zero dependencies at runtime** — No external services. No ZooKeeper, no JVM, no network servers
+| | |
+|---|---|
+| **Kafka-compatible API** | Topics, partitions, consumer groups, offset management, subscribe/poll/commit/close |
+| **Merkle tree integrity** | SHA-256 content-addressed storage, inclusion proofs, tamper detection |
+| **Crash-safe** | Atomic writes (temp+fsync+rename) for all metadata, index fsync on every write |
+| **Concurrent** | `RwLock` per partition, `RwLock` on topic map, `Mutex` per consumer group — readers never block readers |
+| **LZ4 compression** | Transparent, per-broker. Objects hashed before compression so proofs work regardless of mode. Mixed-mode reads supported |
+| **Retention** | Configurable `max_records` per topic. Old records become unreachable |
+| **Batch API** | `send_batch()` amortizes fsync — 1 per batch instead of 1 per record |
+| **Persistent** | All state survives process restarts. Topics, partitions, offsets, and tree snapshots are durable |
+| **Zero runtime dependencies** | No external services, no JVM, no network, no ZooKeeper |
 
 ## Quick Start
 
@@ -26,7 +137,7 @@ Add to your `Cargo.toml`:
 merkql = "0.1"
 ```
 
-### Producer / Consumer
+### Produce and consume
 
 ```rust
 use merkql::broker::{Broker, BrokerConfig};
@@ -34,22 +145,19 @@ use merkql::consumer::{ConsumerConfig, OffsetReset};
 use merkql::record::ProducerRecord;
 use std::time::Duration;
 
-// Open a broker
-let config = BrokerConfig::new("/tmp/my-log");
-let broker = Broker::open(config).unwrap();
+let broker = Broker::open(BrokerConfig::new("/tmp/my-log")).unwrap();
 
-// Produce records
+// Produce
 let producer = Broker::producer(&broker);
-producer.send(&ProducerRecord::new("events", Some("user-1".into()), r#"{"action":"login"}"#)).unwrap();
-producer.send(&ProducerRecord::new("events", None, r#"{"action":"heartbeat"}"#)).unwrap();
+producer.send(&ProducerRecord::new("events", Some("user-1".into()),
+    r#"{"action":"login"}"#)).unwrap();
 
-// Consume records
+// Consume
 let mut consumer = Broker::consumer(&broker, ConsumerConfig {
     group_id: "my-service".into(),
     auto_commit: false,
     offset_reset: OffsetReset::Earliest,
 });
-
 consumer.subscribe(&["events"]).unwrap();
 let records = consumer.poll(Duration::from_millis(100)).unwrap();
 
@@ -61,23 +169,20 @@ consumer.commit_sync().unwrap();
 consumer.close().unwrap();
 ```
 
-### Merkle Proofs
+### Verify integrity
 
 ```rust
-// After producing records, verify integrity
 let topic = broker.topic("events").unwrap();
-let part_arc = topic.partition(0).unwrap();
-let partition = part_arc.read().unwrap();
+let partition = topic.partition(0).unwrap().read().unwrap();
 
-// Generate a proof for offset 0
+// Generate and verify a proof for any offset
 let proof = partition.proof(0).unwrap().unwrap();
 
-// Verify the proof
 use merkql::tree::MerkleTree;
 assert!(MerkleTree::verify_proof(&proof, partition.store()).unwrap());
 ```
 
-### Compression
+### Enable compression
 
 ```rust
 use merkql::compression::Compression;
@@ -87,10 +192,10 @@ let config = BrokerConfig {
     ..BrokerConfig::new("/tmp/my-log")
 };
 let broker = Broker::open(config).unwrap();
-// All writes are now LZ4-compressed. Reads auto-detect compression via per-object markers.
+// Reads auto-detect compression via per-object markers — mixed modes just work.
 ```
 
-### Retention
+### Configure retention
 
 ```rust
 use merkql::topic::RetentionConfig;
@@ -100,8 +205,34 @@ let config = BrokerConfig {
     ..BrokerConfig::new("/tmp/my-log")
 };
 let broker = Broker::open(config).unwrap();
-// Topics auto-trim to the most recent 10,000 records per partition.
+// Each partition auto-trims to the most recent 10,000 records.
 ```
+
+### Batch writes
+
+```rust
+let records: Vec<ProducerRecord> = events.iter()
+    .map(|e| ProducerRecord::new("events", None, e.to_string()))
+    .collect();
+let results = producer.send_batch(&records).unwrap();
+// 1 fsync for the entire batch instead of 1 per record.
+```
+
+## Kafka API Mapping
+
+If you know Kafka, you already know merkql:
+
+| merkql | Kafka |
+|---|---|
+| `Broker::open(config)` | `bootstrap.servers` |
+| `Broker::producer(broker)` | `new KafkaProducer<>(props)` |
+| `producer.send(record)` | `producer.send(record)` |
+| `producer.send_batch(records)` | *(no equivalent — merkql-specific)* |
+| `Broker::consumer(broker, config)` | `new KafkaConsumer<>(props)` |
+| `consumer.subscribe(&["topic"])` | `consumer.subscribe(List.of(...))` |
+| `consumer.poll(timeout)` | `consumer.poll(Duration)` |
+| `consumer.commit_sync()` | `consumer.commitSync()` |
+| `consumer.close()` | `consumer.close()` |
 
 ## Architecture
 
@@ -122,38 +253,26 @@ let broker = Broker::open(config).unwrap();
   config.bin                      # Broker config
 ```
 
-## Kafka API Mapping
+Every object is stored in a git-style content-addressed store keyed by its SHA-256 hash. Identical data is never stored twice. The merkle tree is an incremental binary carry chain — appends are O(log n) and the tree state is captured in a compact snapshot that survives restarts.
 
-| merkql | Kafka | Notes |
+## Correctness
+
+merkql ships with a Jepsen-style test suite: data-backed claims about correctness at scale, fault injection with real assertions, and property-based testing with random operation sequences.
+
+### Properties verified
+
+| Property | Claim | Evidence |
 |---|---|---|
-| `Broker::open(config)` | `bootstrap.servers` | Startup |
-| `Broker::consumer(broker, config)` | `new KafkaConsumer<>(props)` | Per-phase lifecycle |
-| `consumer.subscribe(&["topic"])` | `consumer.subscribe(List.of(...))` | Set active topics |
-| `consumer.poll(timeout)` | `consumer.poll(Duration)` | Returns `Vec<Record>` |
-| `consumer.commit_sync()` | `consumer.commitSync()` | Persist offsets |
-| `consumer.close()` | `consumer.close()` | End phase |
-| `Broker::producer(broker)` | `new KafkaProducer<>(props)` | Send records |
-| `producer.send(record)` | `producer.send(record)` | Auto-creates topics |
-| `producer.send_batch(records)` | N/A | Batch API for amortized fsync |
-
-## Correctness Verification
-
-merkql includes a Jepsen-style test suite that makes data-backed claims about correctness properties at scale, injects faults with real assertions, and exercises random operation sequences via property-based testing.
-
-### Properties Verified
-
-| Property | Claim | Sample Size |
-|---|---|---|
-| **Total Order** | Partition offsets are monotonically increasing and gap-free | 10,000 records across 4 partitions |
+| **Total order** | Partition offsets are monotonically increasing and gap-free | 10,000 records across 4 partitions |
 | **Durability** | All records survive broker close/reopen cycles | 5,000 records across 3 reopen cycles |
-| **Exactly-Once** | Consumer groups deliver every record exactly once across commit/restart | 1,000 records across 4 phases |
-| **Merkle Integrity** | 100% of records have valid inclusion proofs | 10,000 proofs across 4 partitions |
-| **No Data Loss** | Every confirmed append is immediately readable | 5,000 records verified immediately after write |
-| **Byte Fidelity** | Values preserved exactly for edge-case payloads | 500 payloads (boundary lengths, unicode, CJK, RTL, combining chars, structured data, control chars, random ASCII up to 64KB) |
+| **Exactly-once** | Consumer groups deliver every record exactly once across commit/restart | 1,000 records across 4 phases |
+| **Merkle integrity** | 100% of records have valid inclusion proofs | 10,000 proofs across 4 partitions |
+| **No data loss** | Every confirmed append is immediately readable | 5,000 records verified immediately after write |
+| **Byte fidelity** | Values preserved exactly for edge-case payloads | 500 payloads (unicode, CJK, RTL, combining chars, control chars, random ASCII up to 64KB) |
 
-### Fault Injection (Nemesis)
+### Fault injection
 
-All nemesis tests assert correctness — they do not just observe behavior.
+Every fault test asserts correctness — not just "it didn't crash":
 
 | Fault | Assertion |
 |---|---|
@@ -163,49 +282,36 @@ All nemesis tests assert correctness — they do not just observe behavior.
 | **Missing tree.snapshot** | Broker reopens, all 100 records readable, new appends succeed |
 | **Index ahead of snapshot** | 101 records readable, at least 100 valid proofs |
 
-### v2 Feature Tests
+### Concurrency and feature tests
 
-| Feature | Tests |
+| Feature | Verified |
 |---|---|
-| **Concurrent producers** | N threads writing to same topic, verify no gaps |
+| **Concurrent producers** | N threads writing to same topic — no gaps, no duplicates |
 | **Concurrent consumers** | Independent groups consuming simultaneously |
-| **Batch API** | send_batch with various sizes, empty batch |
-| **LZ4 compression** | Round-trip, persistence, mixed-mode, merkle proofs |
-| **Retention** | max_records window, consumer view, persistence |
+| **Batch API** | send_batch with sizes from 1 to 100, empty batch |
+| **LZ4 compression** | Round-trip fidelity, persistence across restart, mixed-mode reads, merkle proof validity |
+| **Retention** | max_records window enforcement, consumer view, persistence across restart |
 
-### Property-Based Testing
+### Property-based testing
 
 50-100 proptest cases per family:
 
-- **Random operation sequences** — Append/Read/Commit/CloseReopen across 3 topics, verify total order and proof validity
-- **Payload fidelity** — Random printable ASCII 1B-1MB, exact preservation
-- **Binary payload fidelity** — Arbitrary byte sequences (via `from_utf8_lossy`) 1B-64KB, tests full byte spectrum
-- **Multi-topic/partition** — 1-5 topics x 1-8 partitions x 10-200 records, total order and proof validity
-- **Multi-phase exactly-once** — 50-500 records, 2-6 phases, optional broker reopen between phases
+- **Random operation sequences** — Append/Read/Commit/CloseReopen across 3 topics
+- **Payload fidelity** — Random printable ASCII 1B-1MB
+- **Binary payloads** — Arbitrary byte sequences 1B-64KB, full byte spectrum
+- **Multi-topic/partition** — 1-5 topics x 1-8 partitions x 10-200 records
+- **Multi-phase exactly-once** — 50-500 records, 2-6 phases, optional broker reopen
 
-### Running the Test Suite
+### Running the tests
 
 ```bash
-# All tests (96 total)
-cargo test
-
-# Jepsen checkers only (6 tests including 500-payload byte fidelity)
-cargo test --test jepsen_checkers
-
-# Property-based tests (5 families including 1MB payloads and binary data)
-cargo test --test jepsen_proptest
-
-# Fault injection with assertions
-cargo test --test jepsen_nemesis
-
-# v2 features: concurrency, batch, compression, retention
-cargo test --test v2_features_test
-
-# Full JSON report (stdout + target/jepsen-report.json)
-cargo test --test jepsen_report -- --nocapture
-
-# Criterion benchmarks (HTML report in target/criterion/)
-cargo bench
+cargo test                                     # All 91 tests
+cargo test --test jepsen_checkers              # Correctness checkers
+cargo test --test jepsen_nemesis               # Fault injection
+cargo test --test jepsen_proptest              # Property-based tests
+cargo test --test v2_features_test             # Concurrency, compression, retention
+cargo test --test jepsen_report -- --nocapture # JSON report
+cargo bench                                    # Criterion benchmarks
 ```
 
 ## Building

@@ -29,7 +29,6 @@ pub struct TopicConfig {
 /// A named collection of partitions with key-hash or round-robin routing.
 pub struct Topic {
     config: TopicConfig,
-    dir: PathBuf,
     partitions: Vec<Arc<RwLock<Partition>>>,
     round_robin_counter: AtomicU32,
     retention: RetentionConfig,
@@ -69,7 +68,6 @@ impl Topic {
 
         Ok(Topic {
             config,
-            dir,
             partitions,
             round_robin_counter: AtomicU32::new(0),
             retention,
@@ -93,7 +91,6 @@ impl Topic {
 
         Ok(Topic {
             config,
-            dir,
             partitions,
             round_robin_counter: AtomicU32::new(0),
             retention: RetentionConfig::default(),

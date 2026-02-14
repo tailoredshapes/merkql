@@ -2,6 +2,11 @@
 name = "merkql"
 version = "0.1.0"
 edition = "2024"
+description = "Embedded event log with Kafka-compatible semantics and merkle tree integrity verification"
+license = "MIT"
+keywords = ["kafka", "event-streaming", "merkle-tree", "audit-log", "embedded"]
+categories = ["data-structures", "database-implementations"]
+readme = "README.md"
 
 [dependencies]
 sha2 = "0.10"
