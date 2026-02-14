@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>merkql — Merkle Tree Backed Persistent Log</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --purple: #bc8cff;
+      --orange: #d29922;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 80px 0 60px;
+      border-bottom: 1px solid var(--border);
+    }
+    .hero h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--muted);
+      max-width: 600px;
+      margin: 0 auto 32px;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { text-decoration: none; opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+
+    /* Features */
+    .features {
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .features h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 48px;
+    }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .feature-card h3 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+    .feature-card p { color: var(--muted); font-size: 0.95rem; }
+    .feature-icon {
+      display: inline-block;
+      width: 36px;
+      height: 36px;
+      line-height: 36px;
+      text-align: center;
+      font-size: 1.2rem;
+      background: var(--bg);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    /* Code */
+    .code-section {
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .code-section h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 12px;
+    }
+    .code-section > .container > p {
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      overflow-x: auto;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .kw { color: var(--purple); }
+    .str { color: #a5d6ff; }
+    .fn { color: #d2a8ff; }
+    .cm { color: var(--muted); }
+    .tp { color: var(--orange); }
+
+    /* Comparison */
+    .comparison {
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .comparison h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 32px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    td:first-child { font-weight: 600; }
+
+    /* Architecture */
+    .architecture {
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .architecture h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 32px;
+    }
+    .arch-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 640px) {
+      .arch-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Footer */
+    footer {
+      padding: 40px 0;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="container">
+      <h1><span>merk</span>ql</h1>
+      <p>Kafka-compatible persistent log backed by merkle trees. Cryptographic integrity for every record. Zero external dependencies.</p>
+      <div class="hero-actions">
+        <a href="https://github.com/tsmarsh/merkql" class="btn btn-primary">View on GitHub</a>
+        <a href="https://crates.io/crates/merkql" class="btn btn-secondary">crates.io</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="features">
+    <div class="container">
+      <h2>Why merkql?</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--green);">&#x1f512;</div>
+          <h3>Merkle Tree Integrity</h3>
+          <p>Every partition is a merkle tree. Generate inclusion proofs for any record, verify integrity, detect tampering — all with O(log n) performance.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--accent);">&#x1f4e6;</div>
+          <h3>Kafka-Compatible API</h3>
+          <p>Topics, partitions, consumer groups, offsets. Subscribe, poll, commit, close. The same lifecycle your CDC processors already use.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--purple);">&#x1f4be;</div>
+          <h3>Content-Addressed Storage</h3>
+          <p>Git-style object store with SHA-256 hashing. Identical data is never stored twice. Every object is verifiable by its hash.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--orange);">&#x26a1;</div>
+          <h3>Zero Dependencies</h3>
+          <p>No JVM. No ZooKeeper. No network servers. Just files on disk. Embed merkql directly in your Rust application.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--green);">&#x1f504;</div>
+          <h3>Multi-Phase Consumption</h3>
+          <p>Subscribe, drain, commit, close, re-subscribe with different topics. Offsets persist across phases — built for CDC processing pipelines.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" style="color: var(--accent);">&#x1f50d;</div>
+          <h3>Auditable History</h3>
+          <p>Every append creates a commit linked to the prior one. The full history of each partition is an immutable, verifiable chain.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="code-section">
+    <div class="container">
+      <h2>Simple API</h2>
+      <p>If you've used Kafka, you already know merkql.</p>
+<pre><span class="cm">// Produce events</span>
+<span class="kw">let</span> producer = <span class="tp">Broker</span>::producer(&amp;broker);
+producer.send(&amp;<span class="tp">ProducerRecord</span>::new(<span class="str">"events"</span>, <span class="tp">Some</span>(<span class="str">"user-1"</span>.into()), payload)).unwrap();
+
+<span class="cm">// Consume with familiar Kafka semantics</span>
+<span class="kw">let mut</span> consumer = <span class="tp">Broker</span>::consumer(&amp;broker, config);
+consumer.subscribe(&amp;[<span class="str">"events"</span>]).unwrap();
+<span class="kw">let</span> records = consumer.poll(<span class="tp">Duration</span>::from_millis(<span class="str">100</span>)).unwrap();
+consumer.commit_sync().unwrap();
+
+<span class="cm">// Verify integrity — unique to merkql</span>
+<span class="kw">let</span> proof = partition.proof(offset).unwrap().unwrap();
+<span class="kw">assert!</span>(<span class="tp">MerkleTree</span>::verify_proof(&amp;proof, store).unwrap());</pre>
+    </div>
+  </div>
+
+  <div class="comparison">
+    <div class="container">
+      <h2>merkql vs Kafka</h2>
+      <table>
+        <thead>
+          <tr><th></th><th>merkql</th><th>Apache Kafka</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Deployment</td><td>Embedded library</td><td>Distributed cluster</td></tr>
+          <tr><td>Runtime deps</td><td>None</td><td>JVM + ZooKeeper/KRaft</td></tr>
+          <tr><td>Integrity</td><td>Merkle proofs per record</td><td>CRC32 checksums</td></tr>
+          <tr><td>Storage</td><td>Content-addressed (dedup)</td><td>Segment files</td></tr>
+          <tr><td>Audit trail</td><td>Commit chain per partition</td><td>Not built-in</td></tr>
+          <tr><td>Networking</td><td>In-process</td><td>TCP protocol</td></tr>
+          <tr><td>Scalability</td><td>Single process</td><td>Multi-broker cluster</td></tr>
+          <tr><td>Best for</td><td>Embedded pipelines, testing, edge</td><td>Large-scale distributed streaming</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="architecture">
+    <div class="container">
+      <h2>On-Disk Layout</h2>
+      <div class="arch-grid">
+        <div>
+<pre>.merkql/
+  topics/
+    {topic}/
+      meta.bin
+      partitions/
+        {id}/
+          objects/ab/cdef...
+          HEAD
+          offsets.idx
+          tree.snapshot
+  groups/
+    {group-id}/
+      offsets.bin
+  config.bin</pre>
+        </div>
+        <div>
+          <div class="feature-card" style="margin-bottom: 16px;">
+            <h3>Content-Addressed Objects</h3>
+            <p>Records and merkle nodes stored by SHA-256 hash. First byte is directory prefix, remaining 31 bytes are filename. Same as git.</p>
+          </div>
+          <div class="feature-card" style="margin-bottom: 16px;">
+            <h3>Fixed-Width Offset Index</h3>
+            <p>O(1) record lookup by offset. Each entry is 32 bytes (the SHA-256 hash of the record object). Seek directly to any offset.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Incremental Tree Snapshots</h3>
+            <p>The merkle tree state is persisted after each append. Reopening a partition restores the tree without replaying the log.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p>merkql is open source under the MIT License.</p>
+      <p style="margin-top: 8px;"><a href="https://github.com/tsmarsh/merkql">GitHub</a></p>
+    </div>
+  </footer>
+</body>
+</html>
