@@ -178,6 +178,72 @@
                 <p>The broker is dropped and reopened from the same directory. Committed consumer group offsets survive the restart&mdash;no duplicate delivery.</p>
             </div>
         </div>
+
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 260" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Sensor pipeline flow: sensors to producer to topic with fan-out to two consumer groups</title>
+            <style>
+                .sp-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .sp-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                .sp-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                .sp-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .sp-topic { fill: #1c1917; stroke: #44403c; stroke-width: 1; rx: 3; }
+                .sp-badge { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 8px; fill: #a8a29e; }
+                .sp-line { stroke: #a8a29e; stroke-width: 1; fill: none; }
+                .sp-arrow { fill: #a8a29e; }
+                .sp-grn { fill: #a8c5a8; stroke: #90b090; stroke-width: 1; rx: 3; }
+                .sp-blue { fill: #b5c9d5; stroke: #9bb5c5; stroke-width: 1; rx: 3; }
+            </style>
+            <defs>
+                <marker id="sp-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L6,3 L0,6" class="sp-arrow"/>
+                </marker>
+            </defs>
+            <!-- Sensors -->
+            <rect x="10" y="60" width="80" height="28" class="sp-box"/>
+            <text x="50" y="78" text-anchor="middle" class="sp-code">sensor-a</text>
+            <rect x="10" y="96" width="80" height="28" class="sp-box"/>
+            <text x="50" y="114" text-anchor="middle" class="sp-code">sensor-b</text>
+            <rect x="10" y="132" width="80" height="28" class="sp-box"/>
+            <text x="50" y="150" text-anchor="middle" class="sp-code">sensor-c</text>
+            <text x="50" y="48" text-anchor="middle" class="sp-sub">4 sensors</text>
+            <!-- Arrows to Producer -->
+            <line x1="90" y1="74" x2="128" y2="100" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <line x1="90" y1="110" x2="128" y2="107" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <line x1="90" y1="146" x2="128" y2="114" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <!-- Producer -->
+            <rect x="130" y="80" width="110" height="56" class="sp-box"/>
+            <text x="185" y="100" text-anchor="middle" class="sp-label">Producer</text>
+            <text x="185" y="115" text-anchor="middle" class="sp-code">send()</text>
+            <text x="185" y="127" text-anchor="middle" class="sp-code">send_batch()</text>
+            <!-- Arrow to Topic -->
+            <line x1="240" y1="108" x2="278" y2="108" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <!-- Topic -->
+            <rect x="280" y="68" width="130" height="80" class="sp-topic"/>
+            <text x="345" y="92" text-anchor="middle" class="sp-label" style="fill: #f5f5f4;">Topic: sensors</text>
+            <rect x="292" y="100" width="38" height="16" rx="2" style="fill: #44403c;"/>
+            <text x="311" y="112" text-anchor="middle" class="sp-badge">LZ4</text>
+            <rect x="336" y="100" width="62" height="16" rx="2" style="fill: #44403c;"/>
+            <text x="367" y="112" text-anchor="middle" class="sp-badge">ret: 500</text>
+            <text x="345" y="138" text-anchor="middle" class="sp-code" style="fill: #a8a29e;">1,000 records</text>
+            <!-- Fan-out arrows -->
+            <line x1="410" y1="95" x2="458" y2="72" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <line x1="410" y1="121" x2="458" y2="148" class="sp-line" marker-end="url(#sp-arrow)"/>
+            <!-- Analytics consumer group -->
+            <rect x="460" y="45" width="160" height="50" class="sp-grn"/>
+            <text x="540" y="66" text-anchor="middle" class="sp-label">analytics</text>
+            <text x="540" y="82" text-anchor="middle" class="sp-sub" style="fill: #57534e;">min / max / avg</text>
+            <!-- Alerts consumer group -->
+            <rect x="460" y="125" width="160" height="50" class="sp-blue"/>
+            <text x="540" y="146" text-anchor="middle" class="sp-label">alerts</text>
+            <text x="540" y="162" text-anchor="middle" class="sp-sub" style="fill: #57534e;">temp &gt; 35.0 filter</text>
+            <!-- Restart loop -->
+            <path d="M345,148 L345,205 L465,205 L465,195" class="sp-line" style="stroke-dasharray: 4 2;" marker-end="url(#sp-arrow)"/>
+            <rect x="465" y="195" width="130" height="28" class="sp-box" style="stroke-dasharray: 4 2;"/>
+            <text x="530" y="213" text-anchor="middle" class="sp-sub">offsets preserved</text>
+            <text x="345" y="225" text-anchor="middle" class="sp-sub">restart</text>
+        </svg>
+        </div>
     </div>
 </section>
 
@@ -382,6 +448,62 @@ consumer.<span class="fn">subscribe</span>(&amp;[<span class="str">"sensors"</sp
                 <h3>Consumer group offsets</h3>
                 <p>Each consumer group stores its committed offset per topic-partition in <code>.merkql/groups/{group_id}/offsets.bin</code>. On <code>subscribe()</code>, the consumer checks for committed offsets and resumes from there. If none exist, it falls back to the <code>offset_reset</code> policy (Earliest or Latest).</p>
             </div>
+
+            <div style="margin: 24px 0 32px 0;">
+            <svg role="img" viewBox="0 0 640 180" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+                <title>Consumer offset timeline showing offset persistence across broker restart</title>
+                <style>
+                    .ot-label { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; fill: #292524; font-weight: 500; }
+                    .ot-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                    .ot-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                    .ot-cell { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; }
+                    .ot-new { fill: #e7e5e4; stroke: #d6d3d1; stroke-width: 1; }
+                    .ot-line { stroke: #a8a29e; stroke-width: 1; }
+                </style>
+                <!-- Phase 1: Before restart -->
+                <text x="10" y="16" class="ot-label">Before restart</text>
+                <!-- Log cells 0-999 (condensed) -->
+                <rect x="10" y="28" width="30" height="20" class="ot-cell"/>
+                <text x="25" y="42" text-anchor="middle" class="ot-code">0</text>
+                <rect x="40" y="28" width="30" height="20" class="ot-cell"/>
+                <text x="55" y="42" text-anchor="middle" class="ot-code">1</text>
+                <rect x="70" y="28" width="30" height="20" class="ot-cell"/>
+                <text x="85" y="42" text-anchor="middle" class="ot-code">2</text>
+                <text x="112" y="42" class="ot-code">...</text>
+                <rect x="130" y="28" width="45" height="20" class="ot-cell"/>
+                <text x="152" y="42" text-anchor="middle" class="ot-code">999</text>
+                <!-- Offset markers -->
+                <line x1="175" y1="54" x2="175" y2="68" style="stroke: #a8c5a8; stroke-width: 2;"/>
+                <text x="175" y="80" text-anchor="middle" class="ot-sub" style="fill: #a8c5a8;">analytics @ 999</text>
+                <line x1="175" y1="86" x2="175" y2="96" style="stroke: #b5c9d5; stroke-width: 2;"/>
+                <text x="175" y="108" text-anchor="middle" class="ot-sub" style="fill: #b5c9d5;">alerts @ 999</text>
+                <!-- Restart gap -->
+                <text x="220" y="42" class="ot-label" style="fill: #d6a0a0;">restart</text>
+                <line x1="210" y1="28" x2="210" y2="48" style="stroke: #d6a0a0; stroke-width: 1; stroke-dasharray: 4 2;"/>
+                <line x1="255" y1="28" x2="255" y2="48" style="stroke: #d6a0a0; stroke-width: 1; stroke-dasharray: 4 2;"/>
+                <!-- Phase 2: After restart -->
+                <text x="270" y="16" class="ot-label">After restart + 100 new records</text>
+                <rect x="270" y="28" width="45" height="20" class="ot-cell"/>
+                <text x="292" y="42" text-anchor="middle" class="ot-code">999</text>
+                <rect x="315" y="28" width="45" height="20" class="ot-new"/>
+                <text x="337" y="42" text-anchor="middle" class="ot-code">1000</text>
+                <rect x="360" y="28" width="45" height="20" class="ot-new"/>
+                <text x="382" y="42" text-anchor="middle" class="ot-code">1001</text>
+                <text x="417" y="42" class="ot-code">...</text>
+                <rect x="435" y="28" width="45" height="20" class="ot-new"/>
+                <text x="457" y="42" text-anchor="middle" class="ot-code">1099</text>
+                <!-- Offset markers after -->
+                <line x1="293" y1="54" x2="293" y2="60" style="stroke: #a8c5a8; stroke-width: 2;"/>
+                <path d="M293,60 L457,60" style="stroke: #a8c5a8; stroke-width: 1; stroke-dasharray: 3 2; fill: none;"/>
+                <line x1="457" y1="56" x2="457" y2="68" style="stroke: #a8c5a8; stroke-width: 2;"/>
+                <text x="457" y="80" text-anchor="middle" class="ot-sub" style="fill: #a8c5a8;">analytics → 1099</text>
+                <text x="375" y="74" text-anchor="middle" class="ot-code" style="fill: #a8c5a8;">polls 100 new</text>
+                <!-- Caption -->
+                <text x="10" y="140" class="ot-sub">Committed offsets survive broker restart. After reopen, analytics receives exactly 100 new records — no duplicates.</text>
+                <text x="10" y="156" class="ot-sub">Each consumer group tracks its position independently.</text>
+            </svg>
+            </div>
+
             <div class="feature">
                 <h3>Retention</h3>
                 <p>When <code>max_records</code> is set, the partition advances its <code>min_valid_offset</code> so that at most N records are readable. Records below this watermark return <code>None</code> on read. The data remains on disk (in the pack file) but is logically invisible.</p>

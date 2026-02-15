@@ -168,6 +168,102 @@
                 <p>Every object in the pack file is stored under its SHA-256 hash. If the underlying bytes are modified on disk, re-reading and re-hashing produces a different hash&mdash;an immediate integrity violation.</p>
             </div>
         </div>
+
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 300" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Merkle proof verification: prove and verify panels showing how inclusion proofs work</title>
+            <style>
+                .pv-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .pv-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                .pv-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                .pv-node { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .pv-hl { fill: #d6a0a0; stroke: #c49090; stroke-width: 1; rx: 3; }
+                .pv-sib { fill: #f5f5f4; stroke: #d6a0a0; stroke-width: 1.5; rx: 3; stroke-dasharray: 4 2; }
+                .pv-line { stroke: #a8a29e; stroke-width: 1; }
+                .pv-hl-line { stroke: #d6a0a0; stroke-width: 1.5; }
+                .pv-arrow { fill: #a8a29e; }
+                .pv-check { fill: #a8c5a8; }
+            </style>
+            <defs>
+                <marker id="pv-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L6,3 L0,6" class="pv-arrow"/>
+                </marker>
+            </defs>
+            <!-- Left panel: Prove -->
+            <text x="130" y="20" text-anchor="middle" class="pv-label" style="font-size: 13px;">Prove</text>
+            <rect x="5" y="28" width="250" height="240" rx="4" style="fill: none; stroke: #e7e5e4; stroke-width: 1;"/>
+            <!-- Tree - root -->
+            <line x1="130" y1="62" x2="70" y2="92" class="pv-line"/>
+            <line x1="130" y1="62" x2="190" y2="92" class="pv-line"/>
+            <rect x="105" y="44" width="50" height="24" class="pv-hl"/>
+            <text x="130" y="60" text-anchor="middle" class="pv-code" style="fill: #fff;">root</text>
+            <!-- Level 1 -->
+            <line x1="70" y1="116" x2="40" y2="146" class="pv-hl-line"/>
+            <line x1="70" y1="116" x2="100" y2="146" class="pv-line"/>
+            <line x1="190" y1="116" x2="160" y2="146" class="pv-line"/>
+            <line x1="190" y1="116" x2="220" y2="146" class="pv-line"/>
+            <rect x="45" y="96" width="50" height="24" class="pv-hl"/>
+            <text x="70" y="112" text-anchor="middle" class="pv-code" style="fill: #fff;">h₀₋₃</text>
+            <rect x="165" y="96" width="50" height="24" class="pv-sib"/>
+            <text x="190" y="112" text-anchor="middle" class="pv-code">s₃</text>
+            <!-- Level 2 -->
+            <line x1="40" y1="170" x2="22" y2="200" class="pv-line"/>
+            <line x1="40" y1="170" x2="58" y2="200" class="pv-hl-line"/>
+            <rect x="15" y="148" width="50" height="24" class="pv-hl"/>
+            <text x="40" y="164" text-anchor="middle" class="pv-code" style="fill: #fff;">h₀₋₁</text>
+            <rect x="75" y="148" width="50" height="24" class="pv-sib"/>
+            <text x="100" y="164" text-anchor="middle" class="pv-code">s₂</text>
+            <!-- Leaves -->
+            <rect x="10" y="202" width="40" height="22" class="pv-sib"/>
+            <text x="30" y="217" text-anchor="middle" class="pv-code">s₁</text>
+            <rect x="55" y="202" width="40" height="22" class="pv-hl"/>
+            <text x="75" y="217" text-anchor="middle" class="pv-code" style="fill: #fff;">leaf</text>
+            <!-- Other leaves faded -->
+            <rect x="100" y="202" width="25" height="22" class="pv-node" style="opacity: 0.4;"/>
+            <rect x="130" y="202" width="25" height="22" class="pv-node" style="opacity: 0.4;"/>
+            <rect x="160" y="202" width="25" height="22" class="pv-node" style="opacity: 0.4;"/>
+            <rect x="190" y="202" width="25" height="22" class="pv-node" style="opacity: 0.4;"/>
+            <rect x="220" y="202" width="25" height="22" class="pv-node" style="opacity: 0.4;"/>
+            <!-- Arrow between panels -->
+            <line x1="270" y1="150" x2="328" y2="150" class="pv-line" marker-end="url(#pv-arrow)"/>
+            <text x="299" y="140" text-anchor="middle" class="pv-code" style="fill: #292524;">{leaf,</text>
+            <text x="299" y="152" text-anchor="middle" class="pv-code" style="fill: #292524;">siblings[],</text>
+            <text x="299" y="164" text-anchor="middle" class="pv-code" style="fill: #292524;">root}</text>
+            <!-- Right panel: Verify -->
+            <text x="480" y="20" text-anchor="middle" class="pv-label" style="font-size: 13px;">Verify</text>
+            <rect x="335" y="28" width="300" height="240" rx="4" style="fill: none; stroke: #e7e5e4; stroke-width: 1;"/>
+            <!-- Step 1 -->
+            <rect x="360" y="200" width="80" height="24" class="pv-hl"/>
+            <text x="400" y="216" text-anchor="middle" class="pv-code" style="fill: #fff;">leaf hash</text>
+            <!-- + sibling 1 -->
+            <text x="465" y="216" text-anchor="middle" class="pv-code">+ s₁</text>
+            <rect x="450" y="200" width="36" height="24" class="pv-sib"/>
+            <!-- Arrow up -->
+            <line x1="420" y1="200" x2="420" y2="180" class="pv-hl-line"/>
+            <!-- Step 2 -->
+            <rect x="380" y="155" width="80" height="24" class="pv-hl"/>
+            <text x="420" y="171" text-anchor="middle" class="pv-code" style="fill: #fff;">H(leaf+s₁)</text>
+            <text x="485" y="171" text-anchor="middle" class="pv-code">+ s₂</text>
+            <rect x="470" y="155" width="36" height="24" class="pv-sib"/>
+            <!-- Arrow up -->
+            <line x1="440" y1="155" x2="440" y2="135" class="pv-hl-line"/>
+            <!-- Step 3 -->
+            <rect x="400" y="110" width="80" height="24" class="pv-hl"/>
+            <text x="440" y="126" text-anchor="middle" class="pv-code" style="fill: #fff;">H(..+s₂)</text>
+            <text x="505" y="126" text-anchor="middle" class="pv-code">+ s₃</text>
+            <rect x="490" y="110" width="36" height="24" class="pv-sib"/>
+            <!-- Arrow up -->
+            <line x1="460" y1="110" x2="460" y2="90" class="pv-hl-line"/>
+            <!-- Root comparison -->
+            <rect x="420" y="58" width="80" height="28" class="pv-hl"/>
+            <text x="460" y="76" text-anchor="middle" class="pv-code" style="fill: #fff;">root'</text>
+            <text x="520" y="76" text-anchor="middle" class="pv-label">=</text>
+            <rect x="535" y="60" width="80" height="24" class="pv-hl"/>
+            <text x="575" y="76" text-anchor="middle" class="pv-code" style="fill: #fff;">root</text>
+            <!-- Checkmark -->
+            <text x="575" y="52" text-anchor="middle" style="font-size: 16px; fill: #a8c5a8;">&#10003;</text>
+        </svg>
+        </div>
     </div>
 </section>
 
@@ -331,6 +427,79 @@
                 <h3>Tree snapshots</h3>
                 <p>The tree's state (pending entries and count) is persisted to <code>tree.snapshot</code> after every write using atomic temp+fsync+rename. On reopen, the tree resumes without replaying the log.</p>
             </div>
+
+            <div style="margin: 24px 0 32px 0;">
+            <svg role="img" viewBox="0 0 640 220" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+                <title>Root hash progression and tamper detection across three phases</title>
+                <style>
+                    .rp-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                    .rp-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                    .rp-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                    .rp-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                    .rp-line { stroke: #a8a29e; stroke-width: 1; fill: none; }
+                    .rp-arrow { fill: #a8a29e; }
+                </style>
+                <defs>
+                    <marker id="rp-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                        <path d="M0,0 L6,3 L0,6" class="rp-arrow"/>
+                    </marker>
+                </defs>
+                <!-- Phase 1 -->
+                <text x="95" y="20" text-anchor="middle" class="rp-label">Phase 1: 50 records</text>
+                <rect x="20" y="30" width="150" height="80" class="rp-box"/>
+                <!-- Mini tree -->
+                <line x1="95" y1="48" x2="60" y2="68" class="rp-line"/>
+                <line x1="95" y1="48" x2="130" y2="68" class="rp-line"/>
+                <circle cx="95" cy="45" r="6" style="fill: #a8c5a8; stroke: #90b090;"/>
+                <circle cx="60" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <circle cx="130" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <line x1="60" y1="76" x2="42" y2="90" class="rp-line"/>
+                <line x1="60" y1="76" x2="78" y2="90" class="rp-line"/>
+                <line x1="130" y1="76" x2="112" y2="90" class="rp-line"/>
+                <line x1="130" y1="76" x2="148" y2="90" class="rp-line"/>
+                <text x="95" y="100" text-anchor="middle" class="rp-code" style="fill: #a8c5a8;">root = a3f2...</text>
+                <!-- Arrow -->
+                <line x1="170" y1="70" x2="218" y2="70" class="rp-line" marker-end="url(#rp-arrow)"/>
+                <text x="194" y="62" text-anchor="middle" class="rp-sub">+10</text>
+                <!-- Phase 2 -->
+                <text x="320" y="20" text-anchor="middle" class="rp-label">Phase 2: 60 records</text>
+                <rect x="220" y="30" width="200" height="80" class="rp-box"/>
+                <!-- Larger mini tree -->
+                <line x1="320" y1="48" x2="270" y2="68" class="rp-line"/>
+                <line x1="320" y1="48" x2="370" y2="68" class="rp-line"/>
+                <circle cx="320" cy="45" r="6" style="fill: #b5c9d5; stroke: #9bb5c5;"/>
+                <circle cx="270" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <circle cx="370" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <line x1="270" y1="76" x2="250" y2="90" class="rp-line"/>
+                <line x1="270" y1="76" x2="290" y2="90" class="rp-line"/>
+                <line x1="370" y1="76" x2="350" y2="90" class="rp-line"/>
+                <line x1="370" y1="76" x2="390" y2="90" class="rp-line"/>
+                <text x="320" y="100" text-anchor="middle" class="rp-code" style="fill: #b5c9d5;">root = 7b1c...</text>
+                <text x="320" y="125" text-anchor="middle" class="rp-sub">Earlier proofs still valid</text>
+                <!-- Arrow -->
+                <line x1="420" y1="70" x2="458" y2="70" class="rp-line" marker-end="url(#rp-arrow)"/>
+                <text x="439" y="62" text-anchor="middle" class="rp-sub" style="fill: #d6a0a0;">tamper</text>
+                <!-- Phase 3 -->
+                <text x="540" y="20" text-anchor="middle" class="rp-label" style="fill: #d6a0a0;">Phase 3: Byte flip</text>
+                <rect x="460" y="30" width="170" height="80" class="rp-box" style="stroke: #d6a0a0;"/>
+                <line x1="540" y1="48" x2="500" y2="68" class="rp-line"/>
+                <line x1="540" y1="48" x2="580" y2="68" class="rp-line"/>
+                <circle cx="540" cy="45" r="6" style="fill: #e7e5e4; stroke: #d6a0a0; stroke-width: 1.5;"/>
+                <circle cx="500" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <circle cx="580" cy="72" r="4" style="fill: #e7e5e4;"/>
+                <!-- Corrupted leaf -->
+                <line x1="500" y1="76" x2="484" y2="90" class="rp-line"/>
+                <line x1="500" y1="76" x2="516" y2="90" class="rp-line"/>
+                <circle cx="484" cy="93" r="4" style="fill: #d6a0a0;"/>
+                <text x="484" y="96" text-anchor="middle" style="font-size: 7px; fill: #fff; font-weight: bold;">!</text>
+                <text x="540" y="100" text-anchor="middle" class="rp-code" style="fill: #d6a0a0;">hash mismatch</text>
+                <text x="540" y="118" text-anchor="middle" style="font-size: 14px; fill: #d6a0a0; font-weight: bold;">&#10007;</text>
+                <!-- Captions -->
+                <text x="20" y="155" class="rp-sub">Append-only growth preserves history — new records never modify existing tree nodes</text>
+                <text x="20" y="172" class="rp-sub">Any mutation breaks the hash chain — tamper is detected immediately on re-read</text>
+            </svg>
+            </div>
+
             <div class="feature" style="margin-bottom: 0;">
                 <h3>Regulatory compliance</h3>
                 <p>For SOX, HIPAA, PCI-DSS, or GDPR audit requirements: periodically capture and escrow the merkle root, then hand auditors individual proofs. They can independently verify any record's inclusion without access to the full dataset.</p>

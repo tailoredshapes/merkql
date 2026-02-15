@@ -169,6 +169,88 @@
                 <p>After initial replay, both consumers commit their offsets. When new events arrive, each consumer polls and receives only the new events&mdash;no full replay needed. This is the production pattern for maintaining live projections.</p>
             </div>
         </div>
+
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 380" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>CQRS projections: event log with two consumer groups building different materialized views</title>
+            <style>
+                .cq-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .cq-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                .cq-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                .cq-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .cq-event { fill: #1c1917; stroke: #44403c; stroke-width: 1; rx: 2; }
+                .cq-line { stroke: #a8a29e; stroke-width: 1; fill: none; }
+                .cq-arrow { fill: #a8a29e; }
+                .cq-grn { fill: #a8c5a8; stroke: #90b090; stroke-width: 1; rx: 3; }
+                .cq-gold { fill: #d4c5a0; stroke: #c4b590; stroke-width: 1; rx: 3; }
+            </style>
+            <defs>
+                <marker id="cq-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L6,3 L0,6" class="cq-arrow"/>
+                </marker>
+            </defs>
+            <!-- Event Log (center) -->
+            <text x="320" y="20" text-anchor="middle" class="cq-label" style="font-size: 13px;">Event Log (topic: cart-events)</text>
+            <!-- Events flowing down -->
+            <rect x="270" y="32" width="100" height="22" class="cq-event"/>
+            <text x="320" y="47" text-anchor="middle" class="cq-code" style="fill: #d6a0a0;">AddItem</text>
+            <rect x="270" y="58" width="100" height="22" class="cq-event"/>
+            <text x="320" y="73" text-anchor="middle" class="cq-code" style="fill: #d6a0a0;">AddItem</text>
+            <rect x="270" y="84" width="100" height="22" class="cq-event"/>
+            <text x="320" y="99" text-anchor="middle" class="cq-code" style="fill: #b5c9d5;">RemoveItem</text>
+            <rect x="270" y="110" width="100" height="22" class="cq-event"/>
+            <text x="320" y="125" text-anchor="middle" class="cq-code" style="fill: #d6a0a0;">AddItem</text>
+            <rect x="270" y="136" width="100" height="22" class="cq-event"/>
+            <text x="320" y="151" text-anchor="middle" class="cq-code" style="fill: #d4c5a0;">Checkout</text>
+            <text x="320" y="172" text-anchor="middle" class="cq-code">... 30 events total</text>
+            <!-- Left arrow to Cart State -->
+            <line x1="270" y1="100" x2="198" y2="100" class="cq-line" marker-end="url(#cq-arrow)"/>
+            <!-- Right arrow to Revenue -->
+            <line x1="370" y1="100" x2="442" y2="100" class="cq-line" marker-end="url(#cq-arrow)"/>
+            <!-- Cart State projection (left) -->
+            <rect x="20" y="60" width="176" height="120" class="cq-grn"/>
+            <text x="108" y="82" text-anchor="middle" class="cq-label">Cart State</text>
+            <text x="108" y="96" text-anchor="middle" class="cq-sub" style="fill: #57534e;">Materialized view</text>
+            <line x1="32" y1="104" x2="184" y2="104" style="stroke: #90b090; stroke-width: 1;"/>
+            <text x="36" y="120" class="cq-code" style="fill: #44403c;">cart-1: Widget x3, Gadget x1</text>
+            <text x="36" y="134" class="cq-code" style="fill: #44403c;">cart-2: Bolt x100, Nut x100</text>
+            <text x="36" y="148" class="cq-code" style="fill: #44403c;">cart-3: Rivet x200, Pin x50</text>
+            <text x="108" y="168" text-anchor="middle" class="cq-code" style="fill: #57534e;">group: cart-state</text>
+            <!-- Revenue projection (right) -->
+            <rect x="444" y="60" width="176" height="120" class="cq-gold"/>
+            <text x="532" y="82" text-anchor="middle" class="cq-label">Revenue Report</text>
+            <text x="532" y="96" text-anchor="middle" class="cq-sub" style="fill: #57534e;">Materialized view</text>
+            <line x1="456" y1="104" x2="608" y2="104" style="stroke: #c4b590; stroke-width: 1;"/>
+            <text x="460" y="120" class="cq-code" style="fill: #44403c;">cart-1: $125.43 (checked out)</text>
+            <text x="460" y="134" class="cq-code" style="fill: #44403c;">cart-2: $141.25 (checked out)</text>
+            <text x="460" y="148" class="cq-code" style="fill: #44403c;">cart-3: pending</text>
+            <text x="532" y="168" text-anchor="middle" class="cq-code" style="fill: #57534e;">group: revenue</text>
+            <!-- Offset info -->
+            <text x="108" y="200" text-anchor="middle" class="cq-sub">offset: 30</text>
+            <text x="532" y="200" text-anchor="middle" class="cq-sub">offset: 30</text>
+            <!-- +5 events -->
+            <text x="320" y="224" text-anchor="middle" class="cq-label" style="fill: #d6a0a0;">+5 new events</text>
+            <line x1="320" y1="230" x2="320" y2="248" style="stroke: #d6a0a0; stroke-width: 1;" marker-end="url(#cq-arrow)"/>
+            <!-- Updated state -->
+            <rect x="270" y="250" width="100" height="22" class="cq-event"/>
+            <text x="320" y="265" text-anchor="middle" class="cq-code" style="fill: #d6a0a0;">AddItem</text>
+            <rect x="270" y="276" width="100" height="22" class="cq-event"/>
+            <text x="320" y="291" text-anchor="middle" class="cq-code" style="fill: #d4c5a0;">Checkout</text>
+            <text x="320" y="312" text-anchor="middle" class="cq-code">cart-3 completes</text>
+            <!-- Updated projections -->
+            <line x1="270" y1="280" x2="198" y2="280" class="cq-line" marker-end="url(#cq-arrow)"/>
+            <line x1="370" y1="280" x2="442" y2="280" class="cq-line" marker-end="url(#cq-arrow)"/>
+            <rect x="60" y="270" width="136" height="28" class="cq-grn"/>
+            <text x="128" y="288" text-anchor="middle" class="cq-code" style="fill: #44403c;">cart-3: 8 items, $76</text>
+            <text x="128" y="310" text-anchor="middle" class="cq-sub">offset: 30 → 35</text>
+            <rect x="472" y="270" width="136" height="28" class="cq-gold"/>
+            <text x="540" y="288" text-anchor="middle" class="cq-code" style="fill: #44403c;">total: $342.68</text>
+            <text x="540" y="310" text-anchor="middle" class="cq-sub">offset: 30 → 35</text>
+            <!-- Caption -->
+            <text x="320" y="340" text-anchor="middle" class="cq-sub">Same event stream, different views. Each consumer group processes only new events after commit.</text>
+            <text x="320" y="356" text-anchor="middle" class="cq-sub">No full replay needed for incremental updates.</text>
+        </svg>
+        </div>
     </div>
 </section>
 

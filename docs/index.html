@@ -402,6 +402,75 @@ consumer.<span class="fn">close</span>().<span class="fn">unwrap</span>();</code
         <h2>Correctness</h2>
         <p>Jepsen-style test suite: fault injection with real assertions, property-based testing, and data-backed correctness claims at scale.</p>
 
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 300" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Merkle tree structure: 8-leaf binary tree with proof path highlighted</title>
+            <style>
+                .mt-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; }
+                .mt-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 10px; fill: #292524; }
+                .mt-caption { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; fill: #78716c; }
+                .mt-node { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .mt-proof { fill: #d6a0a0; stroke: #c49090; stroke-width: 1; rx: 3; }
+                .mt-sibling { fill: #f5f5f4; stroke: #d6a0a0; stroke-width: 1.5; rx: 3; stroke-dasharray: 4 2; }
+                .mt-line { stroke: #a8a29e; stroke-width: 1; }
+                .mt-proof-line { stroke: #d6a0a0; stroke-width: 1.5; }
+            </style>
+            <!-- Level 0: Root -->
+            <line x1="320" y1="48" x2="160" y2="88" class="mt-line"/>
+            <line x1="320" y1="48" x2="480" y2="88" class="mt-line"/>
+            <rect x="286" y="28" width="68" height="28" class="mt-proof"/>
+            <text x="320" y="46" text-anchor="middle" class="mt-code" style="fill: #fff;">root</text>
+            <!-- Level 1 -->
+            <line x1="160" y1="108" x2="80" y2="148" class="mt-proof-line"/>
+            <line x1="160" y1="108" x2="240" y2="148" class="mt-line"/>
+            <line x1="480" y1="108" x2="400" y2="148" class="mt-line"/>
+            <line x1="480" y1="108" x2="560" y2="148" class="mt-line"/>
+            <rect x="126" y="88" width="68" height="28" class="mt-proof"/>
+            <text x="160" y="106" text-anchor="middle" class="mt-code" style="fill: #fff;">h₀₋₃</text>
+            <rect x="446" y="88" width="68" height="28" class="mt-sibling"/>
+            <text x="480" y="106" text-anchor="middle" class="mt-code">h₄₋₇</text>
+            <!-- Level 2 -->
+            <line x1="80" y1="168" x2="40" y2="208" class="mt-proof-line"/>
+            <line x1="80" y1="168" x2="120" y2="208" class="mt-line"/>
+            <line x1="240" y1="168" x2="200" y2="208" class="mt-line"/>
+            <line x1="240" y1="168" x2="280" y2="208" class="mt-line"/>
+            <line x1="400" y1="168" x2="360" y2="208" class="mt-line"/>
+            <line x1="400" y1="168" x2="440" y2="208" class="mt-line"/>
+            <line x1="560" y1="168" x2="520" y2="208" class="mt-line"/>
+            <line x1="560" y1="168" x2="600" y2="208" class="mt-line"/>
+            <rect x="46" y="148" width="68" height="28" class="mt-proof"/>
+            <text x="80" y="166" text-anchor="middle" class="mt-code" style="fill: #fff;">h₀₋₁</text>
+            <rect x="206" y="148" width="68" height="28" class="mt-sibling"/>
+            <text x="240" y="166" text-anchor="middle" class="mt-code">h₂₋₃</text>
+            <rect x="366" y="148" width="68" height="28" class="mt-node"/>
+            <text x="400" y="166" text-anchor="middle" class="mt-code">h₄₋₅</text>
+            <rect x="526" y="148" width="68" height="28" class="mt-node"/>
+            <text x="560" y="166" text-anchor="middle" class="mt-code">h₆₋₇</text>
+            <!-- Level 3: Leaves -->
+            <rect x="10" y="208" width="60" height="28" class="mt-sibling"/>
+            <text x="40" y="226" text-anchor="middle" class="mt-code">h₀</text>
+            <rect x="90" y="208" width="60" height="28" class="mt-proof"/>
+            <text x="120" y="226" text-anchor="middle" class="mt-code" style="fill: #fff;">h₁</text>
+            <rect x="170" y="208" width="60" height="28" class="mt-node"/>
+            <text x="200" y="226" text-anchor="middle" class="mt-code">h₂</text>
+            <rect x="250" y="208" width="60" height="28" class="mt-node"/>
+            <text x="280" y="226" text-anchor="middle" class="mt-code">h₃</text>
+            <rect x="330" y="208" width="60" height="28" class="mt-node"/>
+            <text x="360" y="226" text-anchor="middle" class="mt-code">h₄</text>
+            <rect x="410" y="208" width="60" height="28" class="mt-node"/>
+            <text x="440" y="226" text-anchor="middle" class="mt-code">h₅</text>
+            <rect x="490" y="208" width="60" height="28" class="mt-node"/>
+            <text x="520" y="226" text-anchor="middle" class="mt-code">h₆</text>
+            <rect x="570" y="208" width="60" height="28" class="mt-node"/>
+            <text x="600" y="226" text-anchor="middle" class="mt-code">h₇</text>
+            <!-- Proof path lines for h₁ -->
+            <line x1="120" y1="208" x2="80" y2="176" class="mt-proof-line"/>
+            <!-- Caption -->
+            <text x="320" y="264" text-anchor="middle" class="mt-caption">Proof for record h₁: 3 sibling hashes (dashed), O(log n) verification</text>
+            <text x="320" y="280" text-anchor="middle" class="mt-caption">Highlighted path shows leaf → root traversal with sibling hashes at each level</text>
+        </svg>
+        </div>
+
         <div class="stats" style="margin-top: 32px; margin-bottom: 32px;">
             <div class="stat">
                 <div class="num">101</div>
@@ -483,6 +552,69 @@ consumer.<span class="fn">close</span>().<span class="fn">unwrap</span>();</code
         <p class="section-label">Internals</p>
         <h2>Architecture</h2>
         <p>Content-addressed storage with a git-style object layout.</p>
+
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 280" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Architecture overview: Broker → Topic → Partition → PackFileStore, MerkleTree, OffsetTracker</title>
+            <style>
+                .arch-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .arch-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                .arch-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                .arch-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .arch-box-dark { fill: #1c1917; stroke: #44403c; stroke-width: 1; rx: 3; }
+                .arch-line { stroke: #a8a29e; stroke-width: 1; fill: none; }
+                .arch-arrow { fill: #a8a29e; }
+            </style>
+            <defs>
+                <marker id="arch-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L6,3 L0,6" class="arch-arrow"/>
+                </marker>
+            </defs>
+            <!-- Broker -->
+            <rect x="20" y="40" width="120" height="50" class="arch-box-dark"/>
+            <text x="80" y="62" text-anchor="middle" class="arch-label" style="fill: #f5f5f4;">Broker</text>
+            <text x="80" y="78" text-anchor="middle" class="arch-code" style="fill: #a8a29e;">RwLock&lt;HashMap&gt;</text>
+            <!-- Arrow Broker → Topic -->
+            <line x1="140" y1="65" x2="178" y2="65" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <!-- Topic -->
+            <rect x="180" y="30" width="120" height="70" class="arch-box"/>
+            <text x="240" y="55" text-anchor="middle" class="arch-label">Topic</text>
+            <text x="240" y="70" text-anchor="middle" class="arch-code">RwLock&lt;Partition&gt;</text>
+            <text x="240" y="85" text-anchor="middle" class="arch-sub">per partition</text>
+            <!-- Arrow Topic → Partition -->
+            <line x1="300" y1="65" x2="338" y2="65" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <!-- Partition -->
+            <rect x="340" y="20" width="130" height="90" class="arch-box" style="stroke: #d6d3d1;"/>
+            <text x="405" y="45" text-anchor="middle" class="arch-label">Partition</text>
+            <line x1="350" y1="55" x2="460" y2="55" style="stroke: #e7e5e4; stroke-width: 1;"/>
+            <text x="405" y="72" text-anchor="middle" class="arch-sub">owns store, tree, offsets</text>
+            <text x="405" y="88" text-anchor="middle" class="arch-sub">append + read + proof</text>
+            <!-- Arrows Partition → Components -->
+            <line x1="405" y1="110" x2="405" y2="138" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <line x1="370" y1="110" x2="180" y2="148" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <line x1="440" y1="110" x2="570" y2="148" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <!-- PackFileStore -->
+            <rect x="90" y="150" width="180" height="60" class="arch-box"/>
+            <text x="180" y="172" text-anchor="middle" class="arch-label">PackFileStore</text>
+            <text x="180" y="188" text-anchor="middle" class="arch-code">[len: 4B][hash: 32B][data]</text>
+            <text x="180" y="200" text-anchor="middle" class="arch-sub">content-addressed, SHA-256</text>
+            <!-- MerkleTree -->
+            <rect x="320" y="140" width="170" height="60" class="arch-box"/>
+            <text x="405" y="162" text-anchor="middle" class="arch-label">MerkleTree</text>
+            <text x="405" y="178" text-anchor="middle" class="arch-sub">binary carry chain</text>
+            <text x="405" y="192" text-anchor="middle" class="arch-sub">incremental, snapshot-safe</text>
+            <!-- OffsetTracker -->
+            <rect x="500" y="150" width="120" height="50" class="arch-box"/>
+            <text x="560" y="172" text-anchor="middle" class="arch-label">OffsetTracker</text>
+            <text x="560" y="188" text-anchor="middle" class="arch-sub">fixed-width index</text>
+            <!-- Lock legend -->
+            <rect x="20" y="240" width="10" height="10" rx="2" class="arch-box-dark"/>
+            <text x="36" y="249" class="arch-sub">RwLock boundary</text>
+            <line x1="120" y1="245" x2="150" y2="245" class="arch-line" marker-end="url(#arch-arrow)"/>
+            <text x="156" y="249" class="arch-sub">ownership</text>
+        </svg>
+        </div>
+
         <div style="margin-top: 24px;"></div>
         <pre><code>.merkql/
   topics/

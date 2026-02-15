@@ -167,6 +167,59 @@
             <code>cargo run -p merkql-event-sourced-cart</code>
         </div>
 
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 240" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Feature coverage matrix: which example demonstrates which feature</title>
+            <style>
+                .fm-header { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .fm-row { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; fill: #78716c; }
+                .fm-dot-on { fill: #292524; }
+                .fm-dot-off { fill: none; stroke: #e7e5e4; stroke-width: 1; }
+                .fm-grid { stroke: #e7e5e4; stroke-width: 1; }
+            </style>
+            <!-- Column headers -->
+            <text x="260" y="24" text-anchor="middle" class="fm-header">Sensor Pipeline</text>
+            <text x="410" y="24" text-anchor="middle" class="fm-header">Audit Trail</text>
+            <text x="560" y="24" text-anchor="middle" class="fm-header">Event-Sourced Cart</text>
+            <!-- Horizontal grid lines -->
+            <line x1="150" y1="36" x2="630" y2="36" class="fm-grid"/>
+            <line x1="150" y1="68" x2="630" y2="68" class="fm-grid"/>
+            <line x1="150" y1="100" x2="630" y2="100" class="fm-grid"/>
+            <line x1="150" y1="132" x2="630" y2="132" class="fm-grid"/>
+            <line x1="150" y1="164" x2="630" y2="164" class="fm-grid"/>
+            <line x1="150" y1="196" x2="630" y2="196" class="fm-grid"/>
+            <line x1="150" y1="228" x2="630" y2="228" class="fm-grid"/>
+            <!-- Row labels -->
+            <text x="145" y="56" text-anchor="end" class="fm-row">Producer / Consumer</text>
+            <text x="145" y="88" text-anchor="end" class="fm-row">Compression (LZ4)</text>
+            <text x="145" y="120" text-anchor="end" class="fm-row">Retention policy</text>
+            <text x="145" y="152" text-anchor="end" class="fm-row">Merkle proofs</text>
+            <text x="145" y="184" text-anchor="end" class="fm-row">Consumer groups</text>
+            <text x="145" y="216" text-anchor="end" class="fm-row">Event sourcing</text>
+            <!-- Sensor Pipeline column -->
+            <circle cx="260" cy="52" r="5" class="fm-dot-on"/>
+            <circle cx="260" cy="84" r="5" class="fm-dot-on"/>
+            <circle cx="260" cy="116" r="5" class="fm-dot-on"/>
+            <circle cx="260" cy="148" r="5" class="fm-dot-off"/>
+            <circle cx="260" cy="180" r="5" class="fm-dot-on"/>
+            <circle cx="260" cy="212" r="5" class="fm-dot-off"/>
+            <!-- Audit Trail column -->
+            <circle cx="410" cy="52" r="5" class="fm-dot-on"/>
+            <circle cx="410" cy="84" r="5" class="fm-dot-off"/>
+            <circle cx="410" cy="116" r="5" class="fm-dot-off"/>
+            <circle cx="410" cy="148" r="5" class="fm-dot-on"/>
+            <circle cx="410" cy="180" r="5" class="fm-dot-off"/>
+            <circle cx="410" cy="212" r="5" class="fm-dot-off"/>
+            <!-- Event-Sourced Cart column -->
+            <circle cx="560" cy="52" r="5" class="fm-dot-on"/>
+            <circle cx="560" cy="84" r="5" class="fm-dot-off"/>
+            <circle cx="560" cy="116" r="5" class="fm-dot-off"/>
+            <circle cx="560" cy="148" r="5" class="fm-dot-off"/>
+            <circle cx="560" cy="180" r="5" class="fm-dot-on"/>
+            <circle cx="560" cy="212" r="5" class="fm-dot-on"/>
+        </svg>
+        </div>
+
         <div class="example-cards">
             <div class="example-card">
                 <a href="examples/sensor-pipeline.html" class="card-link">
