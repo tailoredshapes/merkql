@@ -5,404 +5,246 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>merkql — Embedded event log with Kafka semantics and merkle integrity</title>
     <meta name="description" content="Kafka-compatible embedded event log for Rust with cryptographic integrity verification. Zero infrastructure. Crash-safe. Tamper-evident.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0d1117;
-            --surface: #161b22;
-            --border: #30363d;
-            --text: #e6edf3;
-            --muted: #8b949e;
-            --accent: #58a6ff;
-            --accent-hover: #79c0ff;
-            --green: #3fb950;
-            --orange: #d29922;
-            --red: #f85149;
-            --purple: #bc8cff;
-            --code-bg: #0d1117;
-            --max-w: 960px;
+            --warm-50:  #fafaf9;
+            --warm-100: #f5f5f4;
+            --warm-150: #ededeb;
+            --warm-200: #e7e5e4;
+            --warm-300: #d6d3d1;
+            --warm-400: #a8a29e;
+            --warm-500: #78716c;
+            --warm-600: #57534e;
+            --warm-700: #44403c;
+            --warm-800: #292524;
+            --warm-900: #1c1917;
+            --warm-950: #0f0e0d;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-            background: var(--bg);
-            color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--warm-50);
+            color: var(--warm-800);
             line-height: 1.6;
             -webkit-font-smoothing: antialiased;
         }
 
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { color: var(--accent-hover); text-decoration: underline; }
+        a { color: var(--warm-700); text-decoration: none; border-bottom: 1px solid var(--warm-300); padding-bottom: 1px; transition: color 0.2s, border-color 0.2s; }
+        a:hover { color: var(--warm-900); border-color: var(--warm-500); }
 
-        code, pre {
-            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-        }
-
-        code {
-            font-size: 0.875em;
-            background: var(--surface);
-            padding: 0.15em 0.35em;
-            border-radius: 4px;
-        }
-
-        pre {
-            background: var(--code-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.25rem;
-            overflow-x: auto;
-            font-size: 0.85rem;
-            line-height: 1.55;
-        }
-
+        code, pre { font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Consolas, monospace; }
+        code { font-size: 0.85em; background: var(--warm-100); padding: 0.1em 0.3em; border-radius: 2px; }
+        pre { background: var(--warm-900); color: var(--warm-300); border-radius: 4px; padding: 20px; overflow-x: auto; font-size: 0.825rem; line-height: 1.65; }
         pre code { background: none; padding: 0; font-size: inherit; }
 
-        .container { max-width: var(--max-w); margin: 0 auto; padding: 0 1.5rem; }
+        .grain::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            opacity: 0.035;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+            background-repeat: repeat;
+            background-size: 256px 256px;
+        }
+        .grain-heavy::after { opacity: 0.05; }
 
-        /* ── Hero ── */
+        .wrap { max-width: 640px; margin: 0 auto; padding: 0 24px; }
+
+        /* Hero */
         .hero {
-            border-bottom: 1px solid var(--border);
-            padding: 5rem 1.5rem 4rem;
-            text-align: center;
+            position: relative;
+            background: var(--warm-950);
+            color: var(--warm-100);
+            padding: 96px 24px 80px;
         }
 
-        .hero h1 {
-            font-size: 3.25rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            margin-bottom: 0.75rem;
-        }
+        .hero h1 { font-size: 2.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+        .hero .tagline { margin-top: 16px; font-size: 1.05rem; color: var(--warm-400); max-width: 480px; line-height: 1.6; }
 
-        .hero h1 span { color: var(--accent); }
+        .hero .traits { margin-top: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
+        .hero .trait { font-size: 0.7rem; font-weight: 500; letter-spacing: 0.04em; color: var(--warm-400); border: 1px solid var(--warm-700); padding: 3px 10px; border-radius: 2px; }
 
-        .hero .tagline {
-            font-size: 1.25rem;
-            color: var(--muted);
-            max-width: 620px;
-            margin: 0 auto 1.75rem;
-        }
+        .hero-links { margin-top: 32px; display: flex; gap: 24px; font-size: 0.875rem; }
+        .hero-links a { color: var(--warm-400); border-bottom: 1px solid var(--warm-700); }
+        .hero-links a:first-child { color: var(--warm-200); border-color: var(--warm-600); }
+        .hero-links a:hover { color: var(--warm-200); border-color: var(--warm-400); }
 
-        .pills {
-            display: flex;
-            justify-content: center;
-            gap: 0.625rem;
-            flex-wrap: wrap;
-            margin-bottom: 2rem;
-        }
+        /* Sections */
+        section { position: relative; padding: 80px 24px; }
+        .section-label { font-size: 0.7rem; font-weight: 500; letter-spacing: 0.2em; text-transform: uppercase; color: var(--warm-400); margin-bottom: 20px; }
+        section h2 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 12px; }
+        section > .wrap > p { color: var(--warm-500); max-width: 480px; margin-bottom: 12px; }
 
-        .pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.375rem;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            padding: 0.3rem 0.8rem;
-            font-size: 0.8125rem;
-            color: var(--muted);
-            font-weight: 500;
-        }
+        .divider { max-width: 640px; margin: 0 auto; padding: 0 24px; }
+        .divider hr { border: none; border-top: 1px solid var(--warm-200); }
 
-        .dot {
-            width: 7px; height: 7px;
-            border-radius: 50%;
-            display: inline-block;
-        }
+        /* Feature list */
+        .features { margin-top: 48px; }
+        .feature { border-left: 2px solid var(--warm-200); padding-left: 24px; margin-bottom: 32px; }
+        .feature h3 { font-size: 0.95rem; font-weight: 500; color: var(--warm-800); }
+        .feature p { margin-top: 4px; font-size: 0.875rem; color: var(--warm-500); line-height: 1.6; max-width: 480px; }
 
-        .dot-green  { background: var(--green); }
-        .dot-blue   { background: var(--accent); }
-        .dot-orange { background: var(--orange); }
-        .dot-purple { background: var(--purple); }
+        /* Stats */
+        .stats { margin-top: 32px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; }
+        @media (min-width: 480px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+        .stat { padding: 16px 0; }
+        .stat .num { font-size: 1.5rem; font-weight: 700; color: var(--warm-800); letter-spacing: -0.02em; }
+        .stat .lbl { font-size: 0.75rem; color: var(--warm-400); margin-top: 2px; }
 
-        .hero-cta {
-            display: inline-flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
+        /* Use cases */
+        .use-case { margin-bottom: 48px; }
+        .use-case h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+        .use-case > p { color: var(--warm-500); font-size: 0.9rem; line-height: 1.7; max-width: 540px; margin-bottom: 16px; }
+        .code-label { font-size: 0.65rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.1em; color: var(--warm-400); margin-bottom: 8px; margin-top: 20px; }
 
-        .btn {
-            display: inline-block;
-            padding: 0.6rem 1.4rem;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.9375rem;
-            transition: all 0.15s;
-        }
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 0.85rem; }
+        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--warm-150); }
+        th { font-weight: 500; font-size: 0.7rem; color: var(--warm-400); text-transform: uppercase; letter-spacing: 0.06em; }
+        td:first-child { font-weight: 500; color: var(--warm-800); }
+        td { color: var(--warm-500); }
 
-        .btn:hover { text-decoration: none; }
-        .btn-pri { background: var(--accent); color: var(--bg); }
-        .btn-pri:hover { background: var(--accent-hover); }
-        .btn-sec { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
-        .btn-sec:hover { border-color: var(--muted); }
-
-        /* ── Sections ── */
-        section {
-            max-width: var(--max-w);
-            margin: 0 auto;
-            padding: 4rem 1.5rem;
-        }
-
-        section h2 {
-            font-size: 1.875rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            margin-bottom: 1.5rem;
-        }
-
-        section h3 {
-            font-size: 1.125rem;
-            font-weight: 600;
-            margin-bottom: 0.375rem;
-        }
-
-        section p { color: var(--muted); margin-bottom: 1rem; }
-
-        /* ── Value grid ── */
-        .grid { display: grid; gap: 1.25rem; }
-        .grid-3 { grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
-
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.5rem;
-        }
-
-        .card h3 { color: var(--text); margin-bottom: 0.5rem; }
-        .card p { font-size: 0.9375rem; margin-bottom: 0; }
-
-        .card-icon {
-            font-size: 1.5rem;
-            margin-bottom: 0.75rem;
-            display: block;
-        }
-
-        /* ── Use cases ── */
-        .use-case { margin-bottom: 2.5rem; }
-
-        .use-case h3 {
-            color: var(--text);
-            font-size: 1.2rem;
-            margin-bottom: 0.375rem;
-        }
-
-        .use-case p { max-width: 720px; }
-
-        .code-label {
-            font-size: 0.6875rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--muted);
-            font-weight: 600;
-            margin-bottom: 0.4rem;
-            margin-top: 1rem;
-        }
-
-        /* ── Tables ── */
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 2rem;
-        }
-
-        th, td {
-            text-align: left;
-            padding: 0.625rem 0.75rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        th {
-            font-weight: 600;
-            font-size: 0.75rem;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-
-        td:first-child { font-weight: 600; color: var(--text); }
-        td { color: var(--muted); font-size: 0.9375rem; }
-
-        .cmp-table td { text-align: center; font-size: 0.875rem; }
+        .cmp-table td { text-align: center; font-size: 0.8rem; }
         .cmp-table td:first-child { text-align: left; }
-        .cmp-table .y { color: var(--green); }
-        .cmp-table .n { color: var(--muted); opacity: 0.5; }
+        .cmp-table .y { color: var(--warm-800); font-weight: 500; }
+        .cmp-table .n { color: var(--warm-300); }
 
-        /* ── Stats ── */
-        .stat-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
+        /* Install */
+        .install { margin: 24px 0 32px; }
+        .install code { font-size: 0.95rem; background: var(--warm-900); color: var(--warm-200); padding: 8px 16px; border-radius: 4px; display: inline-block; }
 
-        .stat {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.25rem;
-            text-align: center;
-        }
+        /* Syntax */
+        .kw  { color: #d6a0a0; }
+        .fn  { color: #c4b5d0; }
+        .str { color: #b5c9d5; }
+        .cm  { color: var(--warm-600); font-style: italic; }
+        .mc  { color: #d4c5a0; }
+        .ty  { color: #a8c5a8; }
 
-        .stat .num {
-            font-size: 2rem;
-            font-weight: 800;
-            color: var(--green);
-            display: block;
-        }
+        /* Footer */
+        footer { position: relative; background: var(--warm-950); color: var(--warm-500); padding: 48px 24px; }
+        footer .wrap { display: flex; flex-direction: column; gap: 24px; }
+        @media (min-width: 640px) { footer .wrap { flex-direction: row; justify-content: space-between; align-items: baseline; } }
+        footer .name { color: var(--warm-100); font-weight: 500; }
+        footer a { color: var(--warm-500); border: none; }
+        footer a:hover { color: var(--warm-200); }
+        footer .links { display: flex; gap: 24px; font-size: 0.875rem; }
+        footer .bottom { width: 100%; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--warm-800); font-size: 0.75rem; color: var(--warm-700); }
 
-        .stat .lbl { font-size: 0.8125rem; color: var(--muted); }
-
-        /* ── Install ── */
-        .install {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.75rem;
-            text-align: center;
-            margin: 1.5rem 0 2rem;
-        }
-
-        .install code {
-            font-size: 1.125rem;
-            background: var(--code-bg);
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-        }
-
-        /* ── Divider ── */
-        .divider { border-top: 1px solid var(--border); }
-
-        /* ── Footer ── */
-        footer {
-            border-top: 1px solid var(--border);
-            padding: 2rem 1.5rem;
-            text-align: center;
-            color: var(--muted);
-            font-size: 0.875rem;
-        }
-
-        footer a { color: var(--muted); }
-        footer a:hover { color: var(--accent); }
-
-        /* ── Syntax ── */
-        .kw  { color: var(--red); }
-        .fn  { color: var(--purple); }
-        .str { color: #a5d6ff; }
-        .cm  { color: var(--muted); font-style: italic; }
-        .mc  { color: var(--orange); }
-        .ty  { color: var(--green); }
-
-        /* ── Responsive ── */
         @media (max-width: 640px) {
-            .hero h1 { font-size: 2.25rem; }
-            .hero .tagline { font-size: 1.0625rem; }
-            .grid-3 { grid-template-columns: 1fr; }
-            .stat-row { grid-template-columns: repeat(2, 1fr); }
-            .cmp-table { font-size: 0.75rem; }
-            .cmp-table th, .cmp-table td { padding: 0.4rem; }
+            .hero h1 { font-size: 2rem; }
         }
     </style>
 </head>
 <body>
 
-<!-- ════════════ Hero ════════════ -->
-<div class="hero">
-    <h1><span>merkql</span></h1>
-    <p class="tagline">
-        Kafka semantics. Merkle integrity. Zero infrastructure.<br>
-        An embedded event log for Rust.
-    </p>
-    <div class="pills">
-        <span class="pill"><span class="dot dot-green"></span> 101 tests passing</span>
-        <span class="pill"><span class="dot dot-blue"></span> Crash-safe</span>
-        <span class="pill"><span class="dot dot-orange"></span> LZ4 compression</span>
-        <span class="pill"><span class="dot dot-purple"></span> Jepsen-verified</span>
-        <span class="pill"><span class="dot dot-green"></span> Fuzz-tested</span>
-    </div>
-    <div class="hero-cta">
-        <a href="https://github.com/tsmarsh/merkql" class="btn btn-pri">View on GitHub</a>
-        <a href="#start" class="btn btn-sec">Quick start</a>
+<!-- Hero -->
+<div class="hero grain grain-heavy">
+    <div class="wrap">
+        <h1>merkql</h1>
+        <p class="tagline">
+            Kafka semantics. Merkle integrity. Zero infrastructure.<br>
+            An embedded event log for Rust.
+        </p>
+        <div class="traits">
+            <span class="trait">101 tests</span>
+            <span class="trait">Crash-safe</span>
+            <span class="trait">LZ4</span>
+            <span class="trait">Jepsen-verified</span>
+            <span class="trait">Fuzz-tested</span>
+        </div>
+        <div class="hero-links">
+            <a href="https://github.com/tailoredshapes/merkql">GitHub</a>
+            <a href="#start">Quick start</a>
+        </div>
     </div>
 </div>
 
-<!-- ════════════ Why ════════════ -->
-<section>
-    <h2>Why merkql</h2>
-    <div class="grid grid-3">
-        <div class="card">
-            <span class="card-icon">&#x1f4e6;</span>
-            <h3>Zero infrastructure</h3>
-            <p>No JVM, no ZooKeeper, no network, no containers. Add a dependency, open a directory. Your event log starts when your process starts.</p>
-        </div>
-        <div class="card">
-            <span class="card-icon">&#x1f512;</span>
-            <h3>Tamper-evident</h3>
-            <p>Every partition is a merkle tree. Every record gets a SHA-256 inclusion proof. Prove any record hasn't been modified &mdash; the math is the trust model.</p>
-        </div>
-        <div class="card">
-            <span class="card-icon">&#x26a1;</span>
-            <h3>Crash-safe</h3>
-            <p>Atomic writes (temp+fsync+rename) for all metadata. Index fsynced on every write. Jepsen-style fault injection proves recovery from crashes and truncation.</p>
-        </div>
-        <div class="card">
-            <span class="card-icon">&#x1f504;</span>
-            <h3>Kafka-compatible</h3>
-            <p>Topics, partitions, consumer groups, offset management. Subscribe, poll, commit, close &mdash; the lifecycle you already know.</p>
-        </div>
-        <div class="card">
-            <span class="card-icon">&#x1f9f5;</span>
-            <h3>Concurrent</h3>
-            <p>RwLock per partition, RwLock on topic map, Mutex per consumer group. Readers never block readers. Writers only block their own partition.</p>
-        </div>
-        <div class="card">
-            <span class="card-icon">&#x1f4be;</span>
-            <h3>Persistent &amp; compact</h3>
-            <p>All state survives restarts. Optional LZ4 compression. Configurable retention with max_records per topic. Batch API amortizes fsync.</p>
+<!-- Why -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Overview</p>
+        <h2>Why merkql</h2>
+        <div class="features">
+            <div class="feature">
+                <h3>Zero infrastructure</h3>
+                <p>No JVM, no ZooKeeper, no network, no containers. Add a dependency, open a directory. Your event log starts when your process starts.</p>
+            </div>
+            <div class="feature">
+                <h3>Tamper-evident</h3>
+                <p>Every partition is a merkle tree. Every record gets a SHA-256 inclusion proof. Prove any record hasn't been modified&mdash;the math is the trust model.</p>
+            </div>
+            <div class="feature">
+                <h3>Crash-safe</h3>
+                <p>Atomic writes (temp+fsync+rename) for all metadata. Index fsynced on every write. Jepsen-style fault injection proves recovery from crashes and truncation.</p>
+            </div>
+            <div class="feature">
+                <h3>Kafka-compatible</h3>
+                <p>Topics, partitions, consumer groups, offset management. Subscribe, poll, commit, close&mdash;the lifecycle you already know.</p>
+            </div>
+            <div class="feature">
+                <h3>Concurrent</h3>
+                <p>RwLock per partition, RwLock on topic map, Mutex per consumer group. Readers never block readers. Writers only block their own partition.</p>
+            </div>
+            <div class="feature">
+                <h3>Persistent and compact</h3>
+                <p>All state survives restarts. Optional LZ4 compression. Configurable retention with max_records per topic. Batch API amortises fsync.</p>
+            </div>
         </div>
     </div>
 </section>
 
-<!-- ════════════ Performance ════════════ -->
-<section class="divider">
-    <h2>Performance</h2>
-    <p>Single-threaded, single-partition, uncompressed. Batch writes amortize fsync.</p>
-    <div class="stat-row">
-        <div class="stat">
-            <span class="num">31 us</span>
-            <span class="lbl">append latency (256B)</span>
+<div class="divider"><hr></div>
+
+<!-- Performance -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Benchmarks</p>
+        <h2>Performance</h2>
+        <p>Single-threaded, single-partition, uncompressed. Batch writes amortise fsync.</p>
+        <div class="stats">
+            <div class="stat">
+                <div class="num">31 &micro;s</div>
+                <div class="lbl">append (256B)</div>
+            </div>
+            <div class="stat">
+                <div class="num">179K/s</div>
+                <div class="lbl">sequential read</div>
+            </div>
+            <div class="stat">
+                <div class="num">4.8 &micro;s</div>
+                <div class="lbl">random access</div>
+            </div>
+            <div class="stat">
+                <div class="num">150 &micro;s</div>
+                <div class="lbl">proof gen+verify</div>
+            </div>
         </div>
-        <div class="stat">
-            <span class="num">179K/s</span>
-            <span class="lbl">sequential read</span>
-        </div>
-        <div class="stat">
-            <span class="num">4.8 us</span>
-            <span class="lbl">random-access read</span>
-        </div>
-        <div class="stat">
-            <span class="num">150 us</span>
-            <span class="lbl">proof gen+verify (10K)</span>
-        </div>
+        <p style="margin-top: 16px;">See <a href="https://github.com/tailoredshapes/merkql/blob/main/BENCHMARKS.md">BENCHMARKS.md</a> for full results.</p>
     </div>
-    <p>See <a href="https://github.com/tsmarsh/merkql/blob/main/BENCHMARKS.md">BENCHMARKS.md</a> for full results.</p>
 </section>
 
-<!-- ════════════ Use cases ════════════ -->
-<section class="divider">
-    <h2>Use cases</h2>
+<div class="divider"><hr></div>
 
-    <div class="use-case">
-        <h3>Tamper-evident audit logs</h3>
-        <p>
-            Regulatory environments (SOX, HIPAA, PCI-DSS, GDPR) require demonstrating that audit records haven't been modified after the fact.
-            merkql gives you a cryptographic inclusion proof for every record &mdash; hand an auditor a proof and a root hash
-            and they can independently verify authenticity without access to your systems.
-        </p>
-        <div class="code-label">Produce and verify an audit event</div>
-        <pre><code><span class="cm">// Write an audit event</span>
+<!-- Use cases -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Applications</p>
+        <h2>Use cases</h2>
+
+        <div style="margin-top: 40px;"></div>
+
+        <div class="use-case">
+            <h3>Tamper-evident audit logs</h3>
+            <p>Regulatory environments (SOX, HIPAA, PCI-DSS, GDPR) require demonstrating that audit records haven't been modified after the fact. merkql provides a cryptographic inclusion proof for every record&mdash;hand an auditor a proof and a root hash and they can independently verify authenticity without access to your systems.</p>
+            <div class="code-label">Produce and verify an audit event</div>
+            <pre><code><span class="cm">// Write an audit event</span>
 <span class="kw">let</span> producer = <span class="ty">Broker</span>::<span class="fn">producer</span>(&amp;broker);
 producer.<span class="fn">send</span>(&amp;<span class="ty">ProducerRecord</span>::<span class="fn">new</span>(<span class="str">"audit"</span>,
     <span class="mc">Some</span>(<span class="str">"user-1001"</span>.into()),
@@ -416,17 +258,13 @@ producer.<span class="fn">send</span>(&amp;<span class="ty">ProducerRecord</span
 
 <span class="cm">// Anyone can verify independently</span>
 <span class="kw">assert!</span>(<span class="ty">MerkleTree</span>::<span class="fn">verify_proof</span>(&amp;proof, partition.<span class="fn">store</span>()).<span class="fn">unwrap</span>());</code></pre>
-    </div>
+        </div>
 
-    <div class="use-case">
-        <h3>Event sourcing without infrastructure</h3>
-        <p>
-            Event-sourced applications need an append-only log with multiple consumer groups (one per projection),
-            offset tracking, retention, and durability. merkql provides all of these as a library &mdash;
-            no Docker, no cluster management, no network configuration. Your event store starts when your process starts.
-        </p>
-        <div class="code-label">Domain events with compression and retention</div>
-        <pre><code><span class="kw">let</span> config = <span class="ty">BrokerConfig</span> {
+        <div class="use-case">
+            <h3>Event sourcing without infrastructure</h3>
+            <p>Event-sourced applications need an append-only log with multiple consumer groups, offset tracking, retention, and durability. merkql provides all of these as a library&mdash;no Docker, no cluster management, no network configuration.</p>
+            <div class="code-label">Domain events with compression and retention</div>
+            <pre><code><span class="kw">let</span> config = <span class="ty">BrokerConfig</span> {
     compression: <span class="ty">Compression</span>::Lz4,
     default_retention: <span class="ty">RetentionConfig</span> { max_records: <span class="mc">Some</span>(100_000) },
     ..<span class="ty">BrokerConfig</span>::<span class="fn">new</span>(<span class="str">"./data/events"</span>)
@@ -439,17 +277,13 @@ producer.<span class="fn">send</span>(&amp;<span class="ty">ProducerRecord</span
     auto_commit: <span class="kw">false</span>,
     offset_reset: <span class="ty">OffsetReset</span>::Earliest,
 });</code></pre>
-    </div>
+        </div>
 
-    <div class="use-case">
-        <h3>Integration testing</h3>
-        <p>
-            Replace a real Kafka cluster in your test suite. merkql uses the same produce/subscribe/poll/commit
-            lifecycle, starts in microseconds from a temp directory, and provides the same consumer group semantics &mdash;
-            without Docker, port conflicts, or test isolation problems.
-        </p>
-        <div class="code-label">Test with real consumer group semantics</div>
-        <pre><code><span class="kw">#[test]</span>
+        <div class="use-case">
+            <h3>Integration testing</h3>
+            <p>Replace a real Kafka cluster in your test suite. Same produce/subscribe/poll/commit lifecycle, starts in microseconds from a temp directory, provides the same consumer group semantics&mdash;without Docker, port conflicts, or test isolation problems.</p>
+            <div class="code-label">Test with real consumer group semantics</div>
+            <pre><code><span class="kw">#[test]</span>
 <span class="kw">fn</span> <span class="fn">order_processing_pipeline</span>() {
     <span class="kw">let</span> dir = tempfile::tempdir().<span class="fn">unwrap</span>();
     <span class="kw">let</span> broker = <span class="ty">Broker</span>::<span class="fn">open</span>(<span class="ty">BrokerConfig</span>::<span class="fn">new</span>(dir.<span class="fn">path</span>())).<span class="fn">unwrap</span>();
@@ -466,36 +300,34 @@ producer.<span class="fn">send</span>(&amp;<span class="ty">ProducerRecord</span
     <span class="kw">let</span> records = consumer.<span class="fn">poll</span>(<span class="ty">Duration</span>::<span class="fn">from_millis</span>(100)).<span class="fn">unwrap</span>();
     <span class="kw">assert_eq!</span>(records.<span class="fn">len</span>(), test_orders().<span class="fn">len</span>());
 }</code></pre>
-    </div>
+        </div>
 
-    <div class="use-case">
-        <h3>Edge and embedded systems</h3>
-        <p>
-            IoT gateways, POS terminals, medical devices, vehicle telemetry &mdash; anywhere you need local event buffering
-            with integrity guarantees and no network dependencies. LZ4 compression keeps storage manageable.
-            Retention policies prevent unbounded growth. When connectivity is restored, drain the log upstream.
-        </p>
-    </div>
+        <div class="use-case">
+            <h3>Edge and embedded systems</h3>
+            <p>IoT gateways, POS terminals, medical devices, vehicle telemetry&mdash;anywhere you need local event buffering with integrity guarantees and no network dependencies. LZ4 compression keeps storage manageable. Retention policies prevent unbounded growth.</p>
+        </div>
 
-    <div class="use-case">
-        <h3>Local development</h3>
-        <p>
-            Run your Kafka-based microservices locally without Docker Compose.
-            Same topic/partition/consumer-group semantics, zero startup time.
-        </p>
+        <div class="use-case" style="margin-bottom: 0;">
+            <h3>Local development</h3>
+            <p>Run your Kafka-based microservices locally without Docker Compose. Same topic/partition/consumer-group semantics, zero startup time.</p>
+        </div>
     </div>
 </section>
 
-<!-- ════════════ Quick start ════════════ -->
-<section class="divider" id="start">
-    <h2>Quick start</h2>
+<div class="divider"><hr></div>
 
-    <div class="install">
-        <code>cargo add merkql</code>
-    </div>
+<!-- Quick start -->
+<section class="grain" id="start">
+    <div class="wrap">
+        <p class="section-label">Getting Started</p>
+        <h2>Quick start</h2>
 
-    <div class="code-label">Produce and consume</div>
-    <pre><code><span class="kw">use</span> merkql::broker::{<span class="ty">Broker</span>, <span class="ty">BrokerConfig</span>};
+        <div class="install">
+            <code>cargo add merkql</code>
+        </div>
+
+        <div class="code-label">Produce and consume</div>
+        <pre><code><span class="kw">use</span> merkql::broker::{<span class="ty">Broker</span>, <span class="ty">BrokerConfig</span>};
 <span class="kw">use</span> merkql::consumer::{<span class="ty">ConsumerConfig</span>, <span class="ty">OffsetReset</span>};
 <span class="kw">use</span> merkql::record::<span class="ty">ProducerRecord</span>;
 <span class="kw">use</span> std::time::<span class="ty">Duration</span>;
@@ -524,178 +356,200 @@ consumer.<span class="fn">subscribe</span>(&amp;[<span class="str">"events"</spa
 consumer.<span class="fn">commit_sync</span>().<span class="fn">unwrap</span>();
 consumer.<span class="fn">close</span>().<span class="fn">unwrap</span>();</code></pre>
 
-    <div class="code-label">Verify integrity</div>
-    <pre><code><span class="kw">let</span> topic = broker.<span class="fn">topic</span>(<span class="str">"events"</span>).<span class="fn">unwrap</span>();
+        <div class="code-label">Verify integrity</div>
+        <pre><code><span class="kw">let</span> topic = broker.<span class="fn">topic</span>(<span class="str">"events"</span>).<span class="fn">unwrap</span>();
 <span class="kw">let</span> partition = topic.<span class="fn">partition</span>(0).<span class="fn">unwrap</span>().<span class="fn">read</span>().<span class="fn">unwrap</span>();
 <span class="kw">let</span> proof = partition.<span class="fn">proof</span>(0).<span class="fn">unwrap</span>().<span class="fn">unwrap</span>();
 
 <span class="kw">use</span> merkql::tree::<span class="ty">MerkleTree</span>;
 <span class="kw">assert!</span>(<span class="ty">MerkleTree</span>::<span class="fn">verify_proof</span>(&amp;proof, partition.<span class="fn">store</span>()).<span class="fn">unwrap</span>());</code></pre>
-
-    <div class="code-label">Compression, retention, and batch writes</div>
-    <pre><code><span class="kw">use</span> merkql::compression::<span class="ty">Compression</span>;
-<span class="kw">use</span> merkql::topic::<span class="ty">RetentionConfig</span>;
-
-<span class="kw">let</span> config = <span class="ty">BrokerConfig</span> {
-    compression: <span class="ty">Compression</span>::Lz4,
-    default_retention: <span class="ty">RetentionConfig</span> { max_records: <span class="mc">Some</span>(10_000) },
-    ..<span class="ty">BrokerConfig</span>::<span class="fn">new</span>(<span class="str">"/tmp/my-log"</span>)
-};
-<span class="kw">let</span> broker = <span class="ty">Broker</span>::<span class="fn">open</span>(config).<span class="fn">unwrap</span>();
-
-<span class="cm">// Batch writes: 1 fsync for the entire batch</span>
-<span class="kw">let</span> producer = <span class="ty">Broker</span>::<span class="fn">producer</span>(&amp;broker);
-producer.<span class="fn">send_batch</span>(&amp;records).<span class="fn">unwrap</span>();</code></pre>
-</section>
-
-<!-- ════════════ Kafka mapping ════════════ -->
-<section class="divider">
-    <h2>Kafka API mapping</h2>
-    <p>If you know Kafka, you already know merkql:</p>
-    <table>
-        <thead><tr><th>merkql</th><th>Kafka</th></tr></thead>
-        <tbody>
-            <tr><td><code>Broker::open(config)</code></td><td>bootstrap.servers</td></tr>
-            <tr><td><code>Broker::producer(broker)</code></td><td>new KafkaProducer&lt;&gt;(props)</td></tr>
-            <tr><td><code>producer.send(record)</code></td><td>producer.send(record)</td></tr>
-            <tr><td><code>producer.send_batch(records)</code></td><td><em>merkql-specific</em></td></tr>
-            <tr><td><code>Broker::consumer(broker, config)</code></td><td>new KafkaConsumer&lt;&gt;(props)</td></tr>
-            <tr><td><code>consumer.subscribe(&amp;[&quot;topic&quot;])</code></td><td>consumer.subscribe(List.of(...))</td></tr>
-            <tr><td><code>consumer.poll(timeout)</code></td><td>consumer.poll(Duration)</td></tr>
-            <tr><td><code>consumer.commit_sync()</code></td><td>consumer.commitSync()</td></tr>
-            <tr><td><code>consumer.close()</code></td><td>consumer.close()</td></tr>
-        </tbody>
-    </table>
-</section>
-
-<!-- ════════════ Correctness ════════════ -->
-<section class="divider">
-    <h2>Correctness</h2>
-    <p>merkql ships with a Jepsen-style test suite: fault injection with real assertions, property-based testing, and data-backed correctness claims at scale.</p>
-
-    <div class="stat-row">
-        <div class="stat">
-            <span class="num">101</span>
-            <span class="lbl">tests passing</span>
-        </div>
-        <div class="stat">
-            <span class="num">10K</span>
-            <span class="lbl">total order verified</span>
-        </div>
-        <div class="stat">
-            <span class="num">10K</span>
-            <span class="lbl">merkle proofs verified</span>
-        </div>
-        <div class="stat">
-            <span class="num">5</span>
-            <span class="lbl">fault scenarios</span>
-        </div>
     </div>
-
-    <table>
-        <thead><tr><th>Property</th><th>Evidence</th></tr></thead>
-        <tbody>
-            <tr><td>Total order</td><td>Offsets monotonically increasing, gap-free across 10K records and 4 partitions</td></tr>
-            <tr><td>Durability</td><td>5,000 records survive 3 broker close/reopen cycles</td></tr>
-            <tr><td>Exactly-once</td><td>Consumer groups deliver every record exactly once across 4 commit/restart phases</td></tr>
-            <tr><td>Merkle integrity</td><td>100% valid inclusion proofs for 10,000 records</td></tr>
-            <tr><td>Byte fidelity</td><td>500 edge-case payloads preserved exactly (unicode, CJK, RTL, up to 64KB)</td></tr>
-            <tr><td>Crash recovery</td><td>1,000 records recovered after 10 ungraceful drop cycles</td></tr>
-        </tbody>
-    </table>
-
-    <h3>Fault injection</h3>
-    <p>Every nemesis test asserts correctness &mdash; not just survival:</p>
-    <table>
-        <thead><tr><th>Fault</th><th>Assertion</th></tr></thead>
-        <tbody>
-            <tr><td>Crash (drop without close)</td><td>All committed records recovered</td></tr>
-            <tr><td>Truncated snapshot</td><td>Safe failure or graceful reopen</td></tr>
-            <tr><td>Truncated index</td><td>Reopens with N-1 records, zero read errors</td></tr>
-            <tr><td>Missing snapshot</td><td>All records readable, new appends succeed</td></tr>
-            <tr><td>Index ahead of snapshot</td><td>Records readable, proofs valid</td></tr>
-        </tbody>
-    </table>
-
-    <h3>Concurrency &amp; feature tests</h3>
-    <table>
-        <thead><tr><th>Feature</th><th>Verified</th></tr></thead>
-        <tbody>
-            <tr><td>Concurrent producers</td><td>N threads, same topic &mdash; no gaps, no duplicates</td></tr>
-            <tr><td>Concurrent consumers</td><td>Independent groups consuming simultaneously</td></tr>
-            <tr><td>Batch API</td><td>send_batch: sizes 1&ndash;100, empty batch</td></tr>
-            <tr><td>LZ4 compression</td><td>Round-trip, persistence, mixed-mode, merkle proofs</td></tr>
-            <tr><td>Retention</td><td>max_records enforcement, consumer view, persistence across restart</td></tr>
-        </tbody>
-    </table>
 </section>
 
-<!-- ════════════ Comparison ════════════ -->
-<section class="divider">
-    <h2>Comparison</h2>
-    <table class="cmp-table">
-        <thead>
-            <tr><th></th><th>merkql</th><th>Kafka</th><th>SQLite WAL</th><th>Custom file</th></tr>
-        </thead>
-        <tbody>
-            <tr><td>Consumer groups</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
-            <tr><td>Offset tracking</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
-            <tr><td>Partitions</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
-            <tr><td>Tamper detection</td><td class="y">Merkle proofs</td><td class="n">&mdash;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
-            <tr><td>Deployment</td><td>Library</td><td>Cluster</td><td>Library</td><td>Library</td></tr>
-            <tr><td>Compression</td><td class="y">LZ4</td><td class="y">Multiple</td><td class="n">&mdash;</td><td class="n">Manual</td></tr>
-            <tr><td>Retention</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">Manual</td><td class="n">Manual</td></tr>
-            <tr><td>Crash safety</td><td class="y">Atomic + fsync</td><td class="y">Replicated log</td><td class="y">WAL</td><td class="n">Manual</td></tr>
-            <tr><td>Distributed</td><td class="n">&mdash;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
-        </tbody>
-    </table>
+<div class="divider"><hr></div>
+
+<!-- Kafka mapping -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">API</p>
+        <h2>Kafka API mapping</h2>
+        <p>If you know Kafka, you already know merkql.</p>
+        <div style="margin-top: 24px;"></div>
+        <table>
+            <thead><tr><th>merkql</th><th>Kafka</th></tr></thead>
+            <tbody>
+                <tr><td><code>Broker::open(config)</code></td><td>bootstrap.servers</td></tr>
+                <tr><td><code>Broker::producer(broker)</code></td><td>new KafkaProducer&lt;&gt;(props)</td></tr>
+                <tr><td><code>producer.send(record)</code></td><td>producer.send(record)</td></tr>
+                <tr><td><code>producer.send_batch(records)</code></td><td><em>merkql-specific</em></td></tr>
+                <tr><td><code>Broker::consumer(broker, config)</code></td><td>new KafkaConsumer&lt;&gt;(props)</td></tr>
+                <tr><td><code>consumer.subscribe(&amp;["topic"])</code></td><td>consumer.subscribe(List.of(...))</td></tr>
+                <tr><td><code>consumer.poll(timeout)</code></td><td>consumer.poll(Duration)</td></tr>
+                <tr><td><code>consumer.commit_sync()</code></td><td>consumer.commitSync()</td></tr>
+                <tr><td><code>consumer.close()</code></td><td>consumer.close()</td></tr>
+            </tbody>
+        </table>
+    </div>
 </section>
 
-<!-- ════════════ Architecture ════════════ -->
-<section class="divider">
-    <h2>Architecture</h2>
-    <p>Content-addressed storage with a git-style object layout:</p>
-    <pre><code>.merkql/
+<div class="divider"><hr></div>
+
+<!-- Correctness -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Verification</p>
+        <h2>Correctness</h2>
+        <p>Jepsen-style test suite: fault injection with real assertions, property-based testing, and data-backed correctness claims at scale.</p>
+
+        <div class="stats" style="margin-top: 32px; margin-bottom: 32px;">
+            <div class="stat">
+                <div class="num">101</div>
+                <div class="lbl">tests passing</div>
+            </div>
+            <div class="stat">
+                <div class="num">10K</div>
+                <div class="lbl">total order verified</div>
+            </div>
+            <div class="stat">
+                <div class="num">10K</div>
+                <div class="lbl">merkle proofs verified</div>
+            </div>
+            <div class="stat">
+                <div class="num">5</div>
+                <div class="lbl">fault scenarios</div>
+            </div>
+        </div>
+
+        <table>
+            <thead><tr><th>Property</th><th>Evidence</th></tr></thead>
+            <tbody>
+                <tr><td>Total order</td><td>Offsets monotonically increasing, gap-free across 10K records and 4 partitions</td></tr>
+                <tr><td>Durability</td><td>5,000 records survive 3 broker close/reopen cycles</td></tr>
+                <tr><td>Exactly-once</td><td>Consumer groups deliver every record exactly once across 4 commit/restart phases</td></tr>
+                <tr><td>Merkle integrity</td><td>100% valid inclusion proofs for 10,000 records</td></tr>
+                <tr><td>Byte fidelity</td><td>500 edge-case payloads preserved exactly (unicode, CJK, RTL, up to 64KB)</td></tr>
+                <tr><td>Crash recovery</td><td>1,000 records recovered after 10 ungraceful drop cycles</td></tr>
+            </tbody>
+        </table>
+
+        <h3 style="font-size: 1rem; font-weight: 600; margin: 32px 0 12px;">Fault injection</h3>
+        <p style="color: var(--warm-500); margin-bottom: 16px; font-size: 0.9rem;">Every fault test asserts correctness&mdash;not just survival.</p>
+        <table>
+            <thead><tr><th>Fault</th><th>Assertion</th></tr></thead>
+            <tbody>
+                <tr><td>Crash (drop without close)</td><td>All committed records recovered</td></tr>
+                <tr><td>Truncated snapshot</td><td>Safe failure or graceful reopen</td></tr>
+                <tr><td>Truncated index</td><td>Reopens with N-1 records, zero read errors</td></tr>
+                <tr><td>Missing snapshot</td><td>All records readable, new appends succeed</td></tr>
+                <tr><td>Index ahead of snapshot</td><td>Records readable, proofs valid</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- Comparison -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Context</p>
+        <h2>Comparison</h2>
+        <div style="margin-top: 24px;"></div>
+        <table class="cmp-table">
+            <thead>
+                <tr><th></th><th>merkql</th><th>Kafka</th><th>SQLite WAL</th><th>Custom file</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Consumer groups</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+                <tr><td>Offset tracking</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+                <tr><td>Partitions</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+                <tr><td>Tamper detection</td><td class="y">Merkle proofs</td><td class="n">&mdash;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+                <tr><td>Deployment</td><td>Library</td><td>Cluster</td><td>Library</td><td>Library</td></tr>
+                <tr><td>Compression</td><td class="y">LZ4</td><td class="y">Multiple</td><td class="n">&mdash;</td><td class="n">Manual</td></tr>
+                <tr><td>Retention</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">Manual</td><td class="n">Manual</td></tr>
+                <tr><td>Crash safety</td><td class="y">Atomic + fsync</td><td class="y">Replicated log</td><td class="y">WAL</td><td class="n">Manual</td></tr>
+                <tr><td>Distributed</td><td class="n">&mdash;</td><td class="y">&#10003;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- Architecture -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Internals</p>
+        <h2>Architecture</h2>
+        <p>Content-addressed storage with a git-style object layout.</p>
+        <div style="margin-top: 24px;"></div>
+        <pre><code>.merkql/
   topics/
     {topic-name}/
       meta.bin                    <span class="cm"># Topic config (partition count)</span>
       partitions/
         {id}/
           objects/ab/cdef...      <span class="cm"># Content-addressed merkle nodes + records</span>
-          offsets.idx             <span class="cm"># Fixed-width index: offset -&gt; record hash</span>
+          offsets.idx             <span class="cm"># Fixed-width index: offset &rarr; record hash</span>
           tree.snapshot           <span class="cm"># Incremental tree state (atomic write)</span>
           retention.bin           <span class="cm"># Retention marker (atomic write)</span>
   groups/
     {group-id}/
       offsets.bin                 <span class="cm"># Committed offsets per topic-partition</span>
   config.bin                      <span class="cm"># Broker config</span></code></pre>
-    <p>
-        Every object is keyed by its SHA-256 hash &mdash; identical data is never stored twice.
-        The merkle tree uses an incremental binary carry chain: appends are O(log n)
-        and the tree state is captured in a compact snapshot that survives restarts without replaying the log.
-        Objects are hashed <em>before</em> compression, so the tree is compression-independent.
-    </p>
+        <p style="margin-top: 16px;">
+            Every object is keyed by its SHA-256 hash&mdash;identical data is never stored twice. The merkle tree uses an incremental binary carry chain: appends are O(log n) and the tree state is captured in a compact snapshot that survives restarts without replaying the log.
+        </p>
+    </div>
 </section>
 
-<!-- ════════════ Limitations ════════════ -->
-<section class="divider">
-    <h2>What merkql does not do</h2>
-    <p><strong>No distributed replication.</strong> merkql runs on one machine. If you need fault tolerance across nodes, use Kafka.</p>
-    <p><strong>No network protocol.</strong> merkql is a library, not a server. For remote producers/consumers, put an API in front of it.</p>
-    <p><strong>No cross-partition transactions.</strong> Each partition is independent.</p>
-    <p><strong>No schema registry.</strong> Records are opaque byte strings.</p>
-    <p style="color: var(--text); font-weight: 500; margin-top: 1.5rem;">
-        merkql is for workloads where the Kafka <em>programming model</em> is right but the Kafka <em>deployment model</em> is wrong.
-    </p>
+<div class="divider"><hr></div>
+
+<!-- Limitations -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Scope</p>
+        <h2>What merkql does not do</h2>
+        <div class="features" style="margin-top: 32px;">
+            <div class="feature">
+                <h3>No distributed replication</h3>
+                <p>merkql runs on one machine. If you need fault tolerance across nodes, use Kafka.</p>
+            </div>
+            <div class="feature">
+                <h3>No network protocol</h3>
+                <p>merkql is a library, not a server. For remote producers/consumers, put an API in front of it.</p>
+            </div>
+            <div class="feature">
+                <h3>No cross-partition transactions</h3>
+                <p>Each partition is independent.</p>
+            </div>
+            <div class="feature" style="margin-bottom: 0;">
+                <h3>No schema registry</h3>
+                <p>Records are opaque byte strings.</p>
+            </div>
+        </div>
+        <p style="margin-top: 32px; color: var(--warm-800); font-weight: 500;">
+            merkql is for workloads where the Kafka <em>programming model</em> is right but the Kafka <em>deployment model</em> is wrong.
+        </p>
+    </div>
 </section>
 
-<!-- ════════════ Footer ════════════ -->
-<footer>
-    <p>
-        <a href="https://github.com/tsmarsh/merkql">GitHub</a>
-        &nbsp;&middot;&nbsp;
-        MIT License
-    </p>
+<!-- Footer -->
+<footer class="grain grain-heavy">
+    <div class="wrap">
+        <div>
+            <p class="name">merkql</p>
+            <p style="font-size: 0.875rem; margin-top: 4px;">A <a href="https://tailoredshapes.github.io">TailoredShapes</a> project</p>
+        </div>
+        <div class="links">
+            <a href="https://github.com/tailoredshapes/merkql">GitHub</a>
+            <a href="https://github.com/tailoredshapes/merkql/blob/main/BENCHMARKS.md">Benchmarks</a>
+            <a href="https://github.com/tailoredshapes/merkql/blob/main/FAILURE-MODES.md">Failure modes</a>
+        </div>
+        <div class="bottom">
+            <p>&copy; 2025 TailoredShapes &middot; MIT License</p>
+        </div>
+    </div>
 </footer>
 
 </body>
