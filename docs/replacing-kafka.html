@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Replacing Kafka in docker-compose — merkql</title>
+    <meta name="description" content="If your Kafka cluster is a single docker-compose service, merkql gives you the same lifecycle as a library dependency. Before/after code, migration checklist, and honest trade-offs.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --warm-50:  #fafaf9;
+            --warm-100: #f5f5f4;
+            --warm-150: #ededeb;
+            --warm-200: #e7e5e4;
+            --warm-300: #d6d3d1;
+            --warm-400: #a8a29e;
+            --warm-500: #78716c;
+            --warm-600: #57534e;
+            --warm-700: #44403c;
+            --warm-800: #292524;
+            --warm-900: #1c1917;
+            --warm-950: #0f0e0d;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--warm-50);
+            color: var(--warm-800);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        a { color: var(--warm-700); text-decoration: none; border-bottom: 1px solid var(--warm-300); padding-bottom: 1px; transition: color 0.2s, border-color 0.2s; }
+        a:hover { color: var(--warm-900); border-color: var(--warm-500); }
+
+        code, pre { font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Consolas, monospace; }
+        code { font-size: 0.85em; background: var(--warm-100); padding: 0.1em 0.3em; border-radius: 2px; }
+        pre { background: var(--warm-900); color: var(--warm-300); border-radius: 4px; padding: 20px; overflow-x: auto; font-size: 0.825rem; line-height: 1.65; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+
+        .grain::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            opacity: 0.035;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+            background-repeat: repeat;
+            background-size: 256px 256px;
+        }
+        .grain-heavy::after { opacity: 0.05; }
+
+        .wrap { max-width: 640px; margin: 0 auto; padding: 0 24px; }
+
+        /* Hero */
+        .hero {
+            position: relative;
+            background: var(--warm-950);
+            color: var(--warm-100);
+            padding: 96px 24px 80px;
+        }
+
+        .hero h1 { font-size: 2.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+        .hero .tagline { margin-top: 16px; font-size: 1.05rem; color: var(--warm-400); max-width: 480px; line-height: 1.6; }
+
+        .hero .traits { margin-top: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
+        .hero .trait { font-size: 0.7rem; font-weight: 500; letter-spacing: 0.04em; color: var(--warm-400); border: 1px solid var(--warm-700); padding: 3px 10px; border-radius: 2px; }
+
+        .hero-links { margin-top: 32px; display: flex; gap: 24px; font-size: 0.875rem; }
+        .hero-links a { color: var(--warm-400); border-bottom: 1px solid var(--warm-700); }
+        .hero-links a:first-child { color: var(--warm-200); border-color: var(--warm-600); }
+        .hero-links a:hover { color: var(--warm-200); border-color: var(--warm-400); }
+
+        /* Sections */
+        section { position: relative; padding: 80px 24px; }
+        .section-label { font-size: 0.7rem; font-weight: 500; letter-spacing: 0.2em; text-transform: uppercase; color: var(--warm-400); margin-bottom: 20px; }
+        section h2 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 12px; }
+        section > .wrap > p { color: var(--warm-500); max-width: 480px; margin-bottom: 12px; }
+
+        .divider { max-width: 640px; margin: 0 auto; padding: 0 24px; }
+        .divider hr { border: none; border-top: 1px solid var(--warm-200); }
+
+        /* Feature list */
+        .features { margin-top: 48px; }
+        .feature { border-left: 2px solid var(--warm-200); padding-left: 24px; margin-bottom: 32px; }
+        .feature h3 { font-size: 0.95rem; font-weight: 500; color: var(--warm-800); }
+        .feature p { margin-top: 4px; font-size: 0.875rem; color: var(--warm-500); line-height: 1.6; max-width: 480px; }
+
+        /* Stats */
+        .stats { margin-top: 32px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; }
+        @media (min-width: 480px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+        .stat { padding: 16px 0; }
+        .stat .num { font-size: 1.5rem; font-weight: 700; color: var(--warm-800); letter-spacing: -0.02em; }
+        .stat .lbl { font-size: 0.75rem; color: var(--warm-400); margin-top: 2px; }
+
+        /* Steps */
+        .step { margin-bottom: 40px; }
+        .step h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+        .step > p { color: var(--warm-500); font-size: 0.9rem; line-height: 1.7; max-width: 540px; margin-bottom: 16px; }
+        .step-num { display: inline-block; font-size: 0.7rem; font-weight: 600; color: var(--warm-400); background: var(--warm-100); padding: 2px 8px; border-radius: 2px; margin-bottom: 8px; letter-spacing: 0.04em; }
+
+        .code-label { font-size: 0.65rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.1em; color: var(--warm-400); margin-bottom: 8px; margin-top: 20px; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 0.85rem; }
+        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--warm-150); }
+        th { font-weight: 500; font-size: 0.7rem; color: var(--warm-400); text-transform: uppercase; letter-spacing: 0.06em; }
+        td:first-child { font-weight: 500; color: var(--warm-800); }
+        td { color: var(--warm-500); }
+
+        .cmp-table td { text-align: center; font-size: 0.8rem; }
+        .cmp-table td:first-child { text-align: left; }
+        .cmp-table .y { color: var(--warm-800); font-weight: 500; }
+
+        /* Before/After */
+        .compare-before { border-left: 3px solid var(--warm-400); }
+        .compare-after { border-left: 3px solid #a8c5a8; }
+
+        /* Syntax */
+        .kw  { color: #d6a0a0; }
+        .fn  { color: #c4b5d0; }
+        .str { color: #b5c9d5; }
+        .cm  { color: var(--warm-600); font-style: italic; }
+        .mc  { color: #d4c5a0; }
+        .ty  { color: #a8c5a8; }
+
+        /* Footer */
+        footer { position: relative; background: var(--warm-950); color: var(--warm-500); padding: 48px 24px; }
+        footer .wrap { display: flex; flex-direction: column; gap: 24px; }
+        @media (min-width: 640px) { footer .wrap { flex-direction: row; justify-content: space-between; align-items: baseline; } }
+        footer .name { color: var(--warm-100); font-weight: 500; }
+        footer a { color: var(--warm-500); border: none; }
+        footer a:hover { color: var(--warm-200); }
+        footer .links { display: flex; gap: 24px; font-size: 0.875rem; flex-wrap: wrap; }
+        footer .bottom { width: 100%; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--warm-800); font-size: 0.75rem; color: var(--warm-700); }
+
+        @media (max-width: 640px) {
+            .hero h1 { font-size: 2rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero grain grain-heavy">
+    <div class="wrap">
+        <h1>Replacing Kafka in docker-compose</h1>
+        <p class="tagline">
+            If your Kafka cluster is a single docker-compose service, you're paying for distribution you don't use. merkql gives you the same lifecycle as a library dependency.
+        </p>
+        <div class="traits">
+            <span class="trait">Single-node</span>
+            <span class="trait">Zero infrastructure</span>
+            <span class="trait">Same API</span>
+            <span class="trait">Sub-ms startup</span>
+            <span class="trait">Merkle integrity</span>
+        </div>
+        <div class="hero-links">
+            <a href="index.html">Home</a>
+            <a href="#before-after">See the diff</a>
+            <a href="#migration">Migration checklist</a>
+        </div>
+    </div>
+</div>
+
+<!-- The Cost -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">The Problem</p>
+        <h2>What docker-compose Kafka actually costs</h2>
+        <p>Running Kafka on a single node gives you all the operational complexity of a distributed system with none of the distributed benefits.</p>
+
+        <div class="features">
+            <div class="feature">
+                <h3>Container count</h3>
+                <p>2&ndash;5 containers: Kafka, ZooKeeper (or KRaft controller), Schema Registry, a UI tool, an init container for topic creation. Each one needs health checks, restart policies, and volume mounts.</p>
+            </div>
+            <div class="feature">
+                <h3>Memory</h3>
+                <p>1&ndash;2 GB JVM heap minimum just for Kafka. The official recommendation is 6 GB+. ZooKeeper adds another 512 MB&ndash;1 GB. On a laptop, that's your IDE's budget.</p>
+            </div>
+            <div class="feature">
+                <h3>Startup time</h3>
+                <p>30&ndash;60 seconds before your application can produce its first message. JVM class loading, log recovery, controller election, topic creation&mdash;all sequential.</p>
+            </div>
+            <div class="feature">
+                <h3>YAML complexity</h3>
+                <p>50+ lines of docker-compose configuration. 10+ environment variables. <code>KAFKA_ADVERTISED_LISTENERS</code> alone has caused more debugging sessions than most application bugs.</p>
+            </div>
+            <div class="feature">
+                <h3>Port management</h3>
+                <p>9092, 29092, 2181&mdash;three ports minimum, often conflicting with other services. Internal vs external listener configuration is a perennial source of "connection refused" errors.</p>
+            </div>
+            <div class="feature">
+                <h3>CI tax</h3>
+                <p>Docker-in-Docker or service containers in CI. 1&ndash;3 minute pipeline penalty just to spin up Kafka before tests can run. Flaky healthcheck timeouts on shared runners.</p>
+            </div>
+        </div>
+
+        <div style="margin: 32px 0;">
+        <svg role="img" viewBox="0 0 640 200" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>Before and after architecture: Docker containers with Kafka vs merkql as a library</title>
+            <style>
+                .ba-label { font-family: 'Inter', system-ui, sans-serif; font-size: 11px; fill: #292524; font-weight: 500; }
+                .ba-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+                .ba-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; fill: #78716c; }
+                .ba-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .ba-docker { fill: #1c1917; stroke: #44403c; stroke-width: 1; rx: 3; }
+                .ba-app { fill: #f5f5f4; stroke: #a8c5a8; stroke-width: 1.5; rx: 3; }
+                .ba-line { stroke: #a8a29e; stroke-width: 1; fill: none; }
+                .ba-arrow { fill: #a8a29e; }
+            </style>
+            <defs>
+                <marker id="ba-arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L6,3 L0,6" class="ba-arrow"/>
+                </marker>
+            </defs>
+            <!-- Left: Before -->
+            <text x="150" y="16" text-anchor="middle" class="ba-label" style="font-size: 12px;">Before: docker-compose</text>
+            <!-- App box -->
+            <rect x="20" y="60" width="90" height="40" class="ba-box"/>
+            <text x="65" y="78" text-anchor="middle" class="ba-label">Your App</text>
+            <text x="65" y="92" text-anchor="middle" class="ba-code">rdkafka</text>
+            <!-- Network arrow -->
+            <line x1="110" y1="80" x2="138" y2="80" class="ba-line" marker-end="url(#ba-arrow)" style="stroke-dasharray: 4 2;"/>
+            <text x="124" y="72" text-anchor="middle" class="ba-sub">tcp</text>
+            <!-- Docker boundary -->
+            <rect x="140" y="30" width="150" height="140" rx="4" style="fill: none; stroke: #44403c; stroke-width: 1; stroke-dasharray: 6 3;"/>
+            <text x="215" y="46" text-anchor="middle" class="ba-code" style="fill: #a8a29e;">Docker</text>
+            <!-- Kafka container -->
+            <rect x="155" y="55" width="120" height="40" class="ba-docker"/>
+            <text x="215" y="73" text-anchor="middle" class="ba-label" style="fill: #f5f5f4;">Kafka</text>
+            <text x="215" y="87" text-anchor="middle" class="ba-code" style="fill: #a8a29e;">JVM 1&ndash;2 GB</text>
+            <!-- ZooKeeper container -->
+            <rect x="155" y="105" width="120" height="40" class="ba-docker"/>
+            <text x="215" y="123" text-anchor="middle" class="ba-label" style="fill: #f5f5f4;">ZooKeeper</text>
+            <text x="215" y="137" text-anchor="middle" class="ba-code" style="fill: #a8a29e;">JVM 512 MB</text>
+            <!-- Line between Kafka and ZK -->
+            <line x1="215" y1="95" x2="215" y2="105" class="ba-line" style="stroke: #44403c;"/>
+            <!-- Separator -->
+            <line x1="320" y1="30" x2="320" y2="180" style="stroke: #e7e5e4; stroke-width: 1; stroke-dasharray: 4 2;"/>
+            <!-- Right: After -->
+            <text x="480" y="16" text-anchor="middle" class="ba-label" style="font-size: 12px;">After: merkql</text>
+            <!-- Single app box with merkql inside -->
+            <rect x="390" y="50" width="180" height="80" class="ba-app"/>
+            <text x="480" y="74" text-anchor="middle" class="ba-label">Your App</text>
+            <rect x="420" y="85" width="120" height="30" rx="2" style="fill: #a8c5a8; stroke: #90b090; stroke-width: 1;"/>
+            <text x="480" y="104" text-anchor="middle" class="ba-label" style="fill: #292524;">merkql</text>
+            <text x="480" y="145" text-anchor="middle" class="ba-sub">Library call. No network. No containers.</text>
+            <!-- Metrics -->
+            <text x="65" y="180" text-anchor="middle" class="ba-sub" style="fill: #a8a29e;">30&ndash;60s startup</text>
+            <text x="480" y="165" text-anchor="middle" class="ba-sub" style="fill: #a8c5a8;">~14&micro;s startup</text>
+        </svg>
+        </div>
+
+        <div class="code-label">A typical docker-compose Kafka setup</div>
+        <pre><code><span class="cm"># docker-compose.yml</span>
+<span class="kw">version</span>: <span class="str">"3.8"</span>
+<span class="kw">services</span>:
+  <span class="ty">zookeeper</span>:
+    <span class="kw">image</span>: confluentinc/cp-zookeeper:7.5.0
+    <span class="kw">environment</span>:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    <span class="kw">ports</span>:
+      - <span class="str">"2181:2181"</span>
+
+  <span class="ty">kafka</span>:
+    <span class="kw">image</span>: confluentinc/cp-kafka:7.5.0
+    <span class="kw">depends_on</span>:
+      - zookeeper
+    <span class="kw">ports</span>:
+      - <span class="str">"9092:9092"</span>
+      - <span class="str">"29092:29092"</span>
+    <span class="kw">environment</span>:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: <span class="str">"true"</span>
+      KAFKA_HEAP_OPTS: <span class="str">"-Xmx1G -Xms1G"</span>
+    <span class="kw">healthcheck</span>:
+      <span class="kw">test</span>: kafka-broker-api-versions --bootstrap-server localhost:9092
+      <span class="kw">interval</span>: 10s
+      <span class="kw">timeout</span>: 10s
+      <span class="kw">retries</span>: 5</code></pre>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="num">2&ndash;5</div>
+                <div class="lbl">containers</div>
+            </div>
+            <div class="stat">
+                <div class="num">1&ndash;2 GB</div>
+                <div class="lbl">heap minimum</div>
+            </div>
+            <div class="stat">
+                <div class="num">30&ndash;60s</div>
+                <div class="lbl">startup</div>
+            </div>
+            <div class="stat">
+                <div class="num">50+</div>
+                <div class="lbl">lines YAML</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- Before/After -->
+<section class="grain" id="before-after">
+    <div class="wrap">
+        <p class="section-label">Comparison</p>
+        <h2>Before and after</h2>
+        <p>Same verbs, same mental model. <code>subscribe</code>, <code>poll</code>, <code>commit</code>&mdash;the lifecycle you already know.</p>
+
+        <div style="margin-top: 40px;"></div>
+
+        <!-- Comparison 1: Setup -->
+        <div class="code-label">Setup</div>
+        <div class="compare-before" style="padding-left: 16px; margin-bottom: 16px;">
+            <div class="code-label" style="margin-top: 0;">docker-compose.yml + Cargo.toml</div>
+            <pre><code><span class="cm"># docker-compose.yml — just the service definitions</span>
+<span class="ty">zookeeper</span>:
+  <span class="kw">image</span>: confluentinc/cp-zookeeper:7.5.0
+  <span class="kw">ports</span>: [<span class="str">"2181:2181"</span>]
+  <span class="kw">environment</span>:
+    ZOOKEEPER_CLIENT_PORT: 2181
+
+<span class="ty">kafka</span>:
+  <span class="kw">image</span>: confluentinc/cp-kafka:7.5.0
+  <span class="kw">depends_on</span>: [zookeeper]
+  <span class="kw">ports</span>: [<span class="str">"9092:9092"</span>]
+  <span class="kw">environment</span>:
+    KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+<span class="cm"># Cargo.toml</span>
+[dependencies]
+rdkafka = { <span class="kw">version</span> = <span class="str">"0.36"</span>, <span class="kw">features</span> = [<span class="str">"cmake-build"</span>] }</code></pre>
+        </div>
+        <div class="compare-after" style="padding-left: 16px; margin-bottom: 48px;">
+            <div class="code-label" style="margin-top: 0;">Cargo.toml</div>
+            <pre><code><span class="cm"># That's it.</span>
+[dependencies]
+merkql = <span class="str">"0.1"</span></code></pre>
+        </div>
+
+        <!-- Comparison 2: Producer -->
+        <div class="code-label">Producer</div>
+        <div class="compare-before" style="padding-left: 16px; margin-bottom: 16px;">
+            <div class="code-label" style="margin-top: 0;">rdkafka</div>
+            <pre><code><span class="kw">let</span> producer: <span class="ty">FutureProducer</span> = <span class="ty">ClientConfig</span>::<span class="fn">new</span>()
+    .<span class="fn">set</span>(<span class="str">"bootstrap.servers"</span>, <span class="str">"localhost:9092"</span>)
+    .<span class="fn">set</span>(<span class="str">"message.timeout.ms"</span>, <span class="str">"5000"</span>)
+    .<span class="fn">create</span>()
+    .<span class="fn">expect</span>(<span class="str">"Producer creation failed"</span>);
+
+<span class="kw">let</span> record = <span class="ty">FutureRecord</span>::<span class="fn">to</span>(<span class="str">"events"</span>)
+    .<span class="fn">key</span>(<span class="str">"user-1"</span>)
+    .<span class="fn">payload</span>(<span class="str">r#"{"action":"login"}"#</span>);
+producer.<span class="fn">send</span>(record, <span class="ty">Duration</span>::<span class="fn">from_secs</span>(5)).<span class="kw">await</span>.<span class="fn">unwrap</span>();</code></pre>
+        </div>
+        <div class="compare-after" style="padding-left: 16px; margin-bottom: 48px;">
+            <div class="code-label" style="margin-top: 0;">merkql</div>
+            <pre><code><span class="kw">let</span> broker = <span class="ty">Broker</span>::<span class="fn">open</span>(<span class="ty">BrokerConfig</span>::<span class="fn">new</span>(<span class="str">"./data"</span>)).<span class="fn">unwrap</span>();
+<span class="kw">let</span> producer = <span class="ty">Broker</span>::<span class="fn">producer</span>(&amp;broker);
+
+producer.<span class="fn">send</span>(&amp;<span class="ty">ProducerRecord</span>::<span class="fn">new</span>(
+    <span class="str">"events"</span>, <span class="mc">Some</span>(<span class="str">"user-1"</span>.into()), <span class="str">r#"{"action":"login"}"#</span>
+)).<span class="fn">unwrap</span>();</code></pre>
+        </div>
+
+        <!-- Comparison 3: Consumer -->
+        <div class="code-label">Consumer</div>
+        <div class="compare-before" style="padding-left: 16px; margin-bottom: 16px;">
+            <div class="code-label" style="margin-top: 0;">rdkafka</div>
+            <pre><code><span class="kw">let</span> consumer: <span class="ty">StreamConsumer</span> = <span class="ty">ClientConfig</span>::<span class="fn">new</span>()
+    .<span class="fn">set</span>(<span class="str">"bootstrap.servers"</span>, <span class="str">"localhost:9092"</span>)
+    .<span class="fn">set</span>(<span class="str">"group.id"</span>, <span class="str">"my-service"</span>)
+    .<span class="fn">set</span>(<span class="str">"auto.offset.reset"</span>, <span class="str">"earliest"</span>)
+    .<span class="fn">set</span>(<span class="str">"enable.auto.commit"</span>, <span class="str">"false"</span>)
+    .<span class="fn">create</span>()
+    .<span class="fn">expect</span>(<span class="str">"Consumer creation failed"</span>);
+
+consumer.<span class="fn">subscribe</span>(&amp;[<span class="str">"events"</span>]).<span class="fn">unwrap</span>();
+<span class="kw">loop</span> {
+    <span class="kw">let</span> msg = consumer.<span class="fn">recv</span>().<span class="kw">await</span>.<span class="fn">unwrap</span>();
+    <span class="kw">let</span> payload = msg.<span class="fn">payload_view</span>::&lt;<span class="ty">str</span>&gt;().<span class="fn">unwrap</span>().<span class="fn">unwrap</span>();
+    <span class="cm">// process...</span>
+    consumer.<span class="fn">commit_message</span>(&amp;msg, <span class="ty">CommitMode</span>::Sync).<span class="fn">unwrap</span>();
+}</code></pre>
+        </div>
+        <div class="compare-after" style="padding-left: 16px; margin-bottom: 32px;">
+            <div class="code-label" style="margin-top: 0;">merkql</div>
+            <pre><code><span class="kw">let mut</span> consumer = <span class="ty">Broker</span>::<span class="fn">consumer</span>(&amp;broker, <span class="ty">ConsumerConfig</span> {
+    group_id: <span class="str">"my-service"</span>.into(),
+    auto_commit: <span class="kw">false</span>,
+    offset_reset: <span class="ty">OffsetReset</span>::Earliest,
+});
+consumer.<span class="fn">subscribe</span>(&amp;[<span class="str">"events"</span>]).<span class="fn">unwrap</span>();
+<span class="kw">let</span> records = consumer.<span class="fn">poll</span>(<span class="ty">Duration</span>::<span class="fn">from_millis</span>(100)).<span class="fn">unwrap</span>();
+<span class="cm">// process records...</span>
+consumer.<span class="fn">commit_sync</span>().<span class="fn">unwrap</span>();</code></pre>
+        </div>
+
+        <!-- API mapping SVG -->
+        <div style="margin: 40px 0;">
+        <svg role="img" viewBox="0 0 640 140" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 640px;">
+            <title>API mapping: Kafka verbs map directly to merkql equivalents</title>
+            <style>
+                .am-label { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; fill: #292524; font-weight: 500; }
+                .am-code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 9px; }
+                .am-box { fill: #f5f5f4; stroke: #e7e5e4; stroke-width: 1; rx: 3; }
+                .am-box-grn { fill: #a8c5a8; stroke: #90b090; stroke-width: 1; rx: 3; }
+                .am-eq { font-family: 'Inter', system-ui, sans-serif; font-size: 14px; fill: #a8a29e; font-weight: 500; }
+                .am-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 9px; fill: #78716c; }
+            </style>
+            <!-- Headers -->
+            <text x="320" y="14" text-anchor="middle" class="am-label" style="font-size: 11px;">Kafka lifecycle &rarr; merkql lifecycle</text>
+            <!-- Kafka row -->
+            <text x="10" y="42" class="am-sub">rdkafka</text>
+            <rect x="70" y="28" width="90" height="24" class="am-box"/>
+            <text x="115" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">ClientConfig</text>
+            <rect x="170" y="28" width="70" height="24" class="am-box"/>
+            <text x="205" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">create()</text>
+            <rect x="250" y="28" width="80" height="24" class="am-box"/>
+            <text x="290" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">subscribe()</text>
+            <rect x="340" y="28" width="60" height="24" class="am-box"/>
+            <text x="370" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">recv()</text>
+            <rect x="410" y="28" width="90" height="24" class="am-box"/>
+            <text x="455" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">commitSync()</text>
+            <rect x="510" y="28" width="65" height="24" class="am-box"/>
+            <text x="542" y="44" text-anchor="middle" class="am-code" style="fill: #78716c;">close()</text>
+            <!-- Equals signs -->
+            <text x="115" y="72" text-anchor="middle" class="am-eq">=</text>
+            <text x="205" y="72" text-anchor="middle" class="am-eq">=</text>
+            <text x="290" y="72" text-anchor="middle" class="am-eq">=</text>
+            <text x="370" y="72" text-anchor="middle" class="am-eq">=</text>
+            <text x="455" y="72" text-anchor="middle" class="am-eq">=</text>
+            <text x="542" y="72" text-anchor="middle" class="am-eq">=</text>
+            <!-- merkql row -->
+            <text x="10" y="92" class="am-sub">merkql</text>
+            <rect x="70" y="78" width="90" height="24" class="am-box-grn"/>
+            <text x="115" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">BrokerConfig</text>
+            <rect x="170" y="78" width="70" height="24" class="am-box-grn"/>
+            <text x="205" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">open()</text>
+            <rect x="250" y="78" width="80" height="24" class="am-box-grn"/>
+            <text x="290" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">subscribe()</text>
+            <rect x="340" y="78" width="60" height="24" class="am-box-grn"/>
+            <text x="370" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">poll()</text>
+            <rect x="410" y="78" width="90" height="24" class="am-box-grn"/>
+            <text x="455" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">commit_sync()</text>
+            <rect x="510" y="78" width="65" height="24" class="am-box-grn"/>
+            <text x="542" y="94" text-anchor="middle" class="am-code" style="fill: #292524;">close()</text>
+            <!-- Caption -->
+            <text x="320" y="124" text-anchor="middle" class="am-sub">Same verbs, same order, same mental model. No async runtime required.</text>
+        </svg>
+        </div>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- What You Keep -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Parity</p>
+        <h2>What you keep</h2>
+        <p>Everything you use from Kafka on a single node is available in merkql.</p>
+
+        <div style="margin-top: 24px;"></div>
+        <table class="cmp-table">
+            <thead>
+                <tr><th>Feature</th><th>merkql</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Topics</td><td class="y">Auto-created on first send</td></tr>
+                <tr><td>Partitions</td><td class="y"><code>default_partitions</code>, key-based routing</td></tr>
+                <tr><td>Consumer groups</td><td class="y">Independent offset tracking per group</td></tr>
+                <tr><td>Offset tracking</td><td class="y"><code>commit_sync()</code> persists to disk</td></tr>
+                <tr><td>Offset reset</td><td class="y"><code>Earliest</code> / <code>Latest</code></td></tr>
+                <tr><td>Retention</td><td class="y"><code>max_records</code> per topic</td></tr>
+                <tr><td>Compression</td><td class="y">LZ4, transparent</td></tr>
+                <tr><td>Crash safety</td><td class="y">Atomic writes + fsync</td></tr>
+                <tr><td>Batch API</td><td class="y"><code>send_batch()</code>, single fsync</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- What You Gain -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Advantages</p>
+        <h2>What you gain</h2>
+
+        <div class="features">
+            <div class="feature">
+                <h3>Merkle proofs</h3>
+                <p>SHA-256 inclusion proofs for every record. Prove any record hasn't been modified&mdash;the math is the trust model. Kafka doesn't offer this at any price.</p>
+            </div>
+            <div class="feature">
+                <h3>Sub-millisecond startup</h3>
+                <p>Broker reopen takes ~14&micro;s. No JVM boot, no controller election, no log recovery. Your tests start instantly.</p>
+            </div>
+            <div class="feature">
+                <h3>Zero-config testing</h3>
+                <p><code>tempdir()</code>, produce, consume, assert, drop. No Docker, no port conflicts, no test isolation problems, no healthcheck waits.</p>
+            </div>
+            <div class="feature" style="margin-bottom: 0;">
+                <h3>Smaller footprint</h3>
+                <p>Rust library, 5 dependencies, hundreds of KB. No JVM, no GC pauses, no heap tuning.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- When to Stay with Kafka -->
+<section class="grain">
+    <div class="wrap">
+        <p class="section-label">Trade-offs</p>
+        <h2>When to stay with Kafka</h2>
+        <p>merkql is not a Kafka replacement for every workload. Stay with Kafka if you need:</p>
+
+        <div class="features">
+            <div class="feature">
+                <h3>Multi-node replication</h3>
+                <p>If you need fault tolerance across machines, Kafka's replication protocol is battle-tested. merkql runs on one machine.</p>
+            </div>
+            <div class="feature">
+                <h3>Network consumers on different machines</h3>
+                <p>merkql is a library, not a server. All producers and consumers must be in the same process. For remote consumers, put an API in front of it.</p>
+            </div>
+            <div class="feature">
+                <h3>Kafka ecosystem</h3>
+                <p>Kafka Connect, Schema Registry, ksqlDB, Debezium CDC&mdash;if your architecture depends on these, Kafka is the right choice.</p>
+            </div>
+            <div class="feature">
+                <h3>Extreme distributed throughput</h3>
+                <p>Kafka's multi-broker, multi-partition architecture can sustain millions of messages per second across a cluster. merkql targets single-node workloads.</p>
+            </div>
+            <div class="feature" style="margin-bottom: 0;">
+                <h3>Cross-partition transactions</h3>
+                <p>Each merkql partition is independent. If you need atomic writes across partitions, Kafka's transaction protocol handles this.</p>
+            </div>
+        </div>
+
+        <p style="margin-top: 32px; color: var(--warm-800); font-weight: 500;">
+            If your docker-compose has one Kafka broker and all producers/consumers are on the same machine, merkql is likely a better fit.
+        </p>
+    </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- Migration Checklist -->
+<section class="grain" id="migration">
+    <div class="wrap">
+        <p class="section-label">Guide</p>
+        <h2>Migration checklist</h2>
+        <p>Seven steps from docker-compose Kafka to merkql.</p>
+
+        <div style="margin-top: 40px;"></div>
+
+        <div class="step">
+            <span class="step-num">Step 1</span>
+            <h3>Add merkql, remove rdkafka</h3>
+            <p>Replace the <code>rdkafka</code> dependency in your <code>Cargo.toml</code> with <code>merkql</code>. No C library build, no <code>cmake-build</code> feature flag, no librdkafka system dependency.</p>
+            <pre><code><span class="cm"># Before</span>
+[dependencies]
+rdkafka = { <span class="kw">version</span> = <span class="str">"0.36"</span>, <span class="kw">features</span> = [<span class="str">"cmake-build"</span>] }
+
+<span class="cm"># After</span>
+[dependencies]
+merkql = <span class="str">"0.1"</span></code></pre>
+        </div>
+
+        <div class="step">
+            <span class="step-num">Step 2</span>
+            <h3>Replace connection setup</h3>
+            <p>Replace <code>ClientConfig::new().set("bootstrap.servers", ...)</code> with <code>Broker::open(BrokerConfig::new(path))</code>. The path is a directory on the local filesystem.</p>
+            <pre><code><span class="cm">// Before</span>
+<span class="kw">let</span> config = <span class="ty">ClientConfig</span>::<span class="fn">new</span>()
+    .<span class="fn">set</span>(<span class="str">"bootstrap.servers"</span>, <span class="str">"localhost:9092"</span>);
+
+<span class="cm">// After</span>
+<span class="kw">let</span> broker = <span class="ty">Broker</span>::<span class="fn">open</span>(<span class="ty">BrokerConfig</span>::<span class="fn">new</span>(<span class="str">"./data/events"</span>)).<span class="fn">unwrap</span>();</code></pre>
+        </div>
+
+        <div class="step">
+            <span class="step-num">Step 3</span>
+            <h3>Replace producer</h3>
+            <p>Replace <code>FutureProducer</code> creation and <code>FutureRecord</code> sends with <code>Broker::producer()</code> and <code>ProducerRecord</code>. No async runtime required.</p>
+        </div>
+
+        <div class="step">
+            <span class="step-num">Step 4</span>
+            <h3>Replace consumer</h3>
+            <p>Replace <code>StreamConsumer</code> with <code>Broker::consumer()</code>. The config maps directly: <code>group.id</code> &rarr; <code>group_id</code>, <code>auto.offset.reset</code> &rarr; <code>offset_reset</code>, <code>enable.auto.commit</code> &rarr; <code>auto_commit</code>.</p>
+        </div>
+
+        <div class="step">
+            <span class="step-num">Step 5</span>
+            <h3>Remove docker-compose Kafka services</h3>
+            <p>Delete the <code>kafka</code>, <code>zookeeper</code>, and any related services (schema-registry, kafka-ui, init containers) from your <code>docker-compose.yml</code>.</p>
+        </div>
+
+        <div class="step">
+            <span class="step-num">Step 6</span>
+            <h3>Update CI</h3>
+            <p>Remove Kafka service containers from your CI pipeline. No more Docker-in-Docker, no more healthcheck waits, no more 1&ndash;3 minute startup penalty.</p>
+        </div>
+
+        <div class="step" style="margin-bottom: 0;">
+            <span class="step-num">Step 7</span>
+            <h3>Add integrity verification (optional)</h3>
+            <p>This is a new capability that Kafka doesn't offer. Generate and verify merkle proofs for any record. Use this for audit trails, compliance, or tamper detection.</p>
+            <pre><code><span class="kw">let</span> topic = broker.<span class="fn">topic</span>(<span class="str">"events"</span>).<span class="fn">unwrap</span>();
+<span class="kw">let</span> partition = topic.<span class="fn">partition</span>(0).<span class="fn">unwrap</span>().<span class="fn">read</span>().<span class="fn">unwrap</span>();
+<span class="kw">let</span> proof = partition.<span class="fn">proof</span>(0).<span class="fn">unwrap</span>().<span class="fn">unwrap</span>();
+
+<span class="kw">assert!</span>(<span class="ty">MerkleTree</span>::<span class="fn">verify_proof</span>(&amp;proof, partition.<span class="fn">store</span>()).<span class="fn">unwrap</span>());</code></pre>
+        </div>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer class="grain grain-heavy">
+    <div class="wrap">
+        <div>
+            <p class="name">merkql</p>
+            <p style="font-size: 0.875rem; margin-top: 4px;">A <a href="https://tailoredshapes.github.io">TailoredShapes</a> project</p>
+        </div>
+        <div class="links">
+            <a href="index.html">Home</a>
+            <a href="examples.html">Examples</a>
+            <a href="https://github.com/tailoredshapes/merkql">GitHub</a>
+            <a href="https://github.com/tailoredshapes/merkql/blob/main/BENCHMARKS.md">Benchmarks</a>
+        </div>
+        <div class="bottom">
+            <p>&copy; 2025 TailoredShapes &middot; MIT License</p>
+        </div>
+    </div>
+</footer>
+
+</body>
+</html>
