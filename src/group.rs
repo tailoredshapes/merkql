@@ -68,9 +68,7 @@ impl ConsumerGroup {
         let offsets_path = dir.join("offsets.bin");
         let offsets = if offsets_path.exists() {
             match atomic_read(&offsets_path) {
-                Ok(Some(data)) => {
-                    bincode::deserialize(&data).unwrap_or_else(|_| HashMap::new())
-                }
+                Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_else(|_| HashMap::new()),
                 Ok(None) => HashMap::new(), // CRC mismatch → re-consume from beginning
                 Err(_) => HashMap::new(),   // read error → re-consume from beginning
             }

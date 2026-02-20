@@ -97,7 +97,7 @@ impl Partition {
                     }
                 }
                 Ok(None) => MerkleTree::new(), // CRC mismatch → empty tree (will rebuild)
-                Err(_) => MerkleTree::new(),    // read error → empty tree
+                Err(_) => MerkleTree::new(),   // read error → empty tree
             }
         } else {
             MerkleTree::new()
