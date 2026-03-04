@@ -12,13 +12,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 fn pt_broker_config(dir: &std::path::Path, partitions: u32) -> BrokerConfig {
-    BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: partitions,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    }
+    let mut config = BrokerConfig::new(dir);
+    config.default_partitions = partitions;
+    config
 }
 
 // ---------------------------------------------------------------------------

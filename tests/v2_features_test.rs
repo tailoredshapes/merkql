@@ -8,36 +8,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn setup_broker(dir: &std::path::Path) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
-    Broker::open(config).unwrap()
+    Broker::open(BrokerConfig::new(dir)).unwrap()
 }
 
 fn setup_broker_with_compression(dir: &std::path::Path, compression: Compression) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression,
-        default_retention: RetentionConfig::default(),
-    };
+    let mut config = BrokerConfig::new(dir);
+    config.compression = compression;
     Broker::open(config).unwrap()
 }
 
 fn setup_broker_with_retention(dir: &std::path::Path, max_records: u64) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig {
-            max_records: Some(max_records),
-        },
+    let mut config = BrokerConfig::new(dir);
+    config.default_retention = RetentionConfig {
+        max_records: Some(max_records),
     };
     Broker::open(config).unwrap()
 }

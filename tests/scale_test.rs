@@ -12,13 +12,8 @@ use std::time::Duration;
 const SCALE: u64 = 1_000_000;
 
 fn setup_broker(dir: &std::path::Path, partitions: u32) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: partitions,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
+    let mut config = BrokerConfig::new(dir);
+    config.default_partitions = partitions;
     Broker::open(config).unwrap()
 }
 
@@ -27,14 +22,10 @@ fn setup_broker_with_retention(
     partitions: u32,
     max_records: u64,
 ) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: partitions,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig {
-            max_records: Some(max_records),
-        },
+    let mut config = BrokerConfig::new(dir);
+    config.default_partitions = partitions;
+    config.default_retention = RetentionConfig {
+        max_records: Some(max_records),
     };
     Broker::open(config).unwrap()
 }

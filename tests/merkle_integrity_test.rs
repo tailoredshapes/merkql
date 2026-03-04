@@ -7,14 +7,7 @@ use merkql::tree::MerkleTree;
 use std::time::Duration;
 
 fn setup_broker(dir: &std::path::Path) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
-    Broker::open(config).unwrap()
+    Broker::open(BrokerConfig::new(dir)).unwrap()
 }
 
 /// Verify that every record in a partition has a valid merkle proof.
@@ -48,14 +41,7 @@ fn proof_validity_for_all_records() {
 fn identical_records_identical_roots() {
     let dir = tempfile::tempdir().unwrap();
 
-    let config = BrokerConfig {
-        data_dir: dir.path().to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
-    let broker = Broker::open(config).unwrap();
+    let broker = Broker::open(BrokerConfig::new(dir.path())).unwrap();
 
     broker.create_topic("topic-a", 1).unwrap();
     broker.create_topic("topic-b", 1).unwrap();

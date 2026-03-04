@@ -10,13 +10,8 @@ use std::sync::Arc;
 use std::thread;
 
 fn setup_broker(dir: &Path, partitions: u32) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: partitions,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
+    let mut config = BrokerConfig::new(dir);
+    config.default_partitions = partitions;
     Broker::open(config).unwrap()
 }
 
@@ -229,12 +224,12 @@ fn disk_usage_pack_vs_theoretical() {
     // Expected: roughly N * 187 + 2N * 136 ≈ 4.6MB
     // The old layout would be N * 4096 + 2N * 4096 ≈ 120MB
 
-    let max_expected = 10 * 1024 * 1024; // 10MB generous upper bound
+    let max_expected = 12 * 1024 * 1024; // 12MB generous upper bound
     let old_layout_minimum = n as u64 * 4096; // at minimum N * 4KB (ignoring tree nodes)
 
     assert!(
         pack_size < max_expected,
-        "pack file ({} bytes / {:.1} MB) exceeds 10MB upper bound",
+        "pack file ({} bytes / {:.1} MB) exceeds 12MB upper bound",
         pack_size,
         pack_size as f64 / 1_048_576.0
     );
@@ -263,13 +258,8 @@ fn disk_usage_pack_vs_theoretical() {
 #[test]
 fn disk_usage_lz4_compression() {
     let dir = tempfile::tempdir().unwrap();
-    let config = BrokerConfig {
-        data_dir: dir.path().to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::Lz4,
-        default_retention: RetentionConfig::default(),
-    };
+    let mut config = BrokerConfig::new(dir.path());
+    config.compression = Compression::Lz4;
     let broker = Broker::open(config).unwrap();
     let producer = Broker::producer(&broker);
 

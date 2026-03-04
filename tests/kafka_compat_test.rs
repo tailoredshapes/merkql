@@ -6,14 +6,7 @@ use merkql::topic::RetentionConfig;
 use std::time::Duration;
 
 fn setup_broker(dir: &std::path::Path) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: Compression::None,
-        default_retention: RetentionConfig::default(),
-    };
-    Broker::open(config).unwrap()
+    Broker::open(BrokerConfig::new(dir)).unwrap()
 }
 
 /// Reproduce the meshql `consumeLoop()` pattern:

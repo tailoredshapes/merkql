@@ -10,9 +10,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(feature = "notify")]
+use merkql_notify::{AppendNotification, NotifyPlugin};
+
 pub type BrokerRef = Arc<Broker>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BrokerConfig {
     pub data_dir: PathBuf,
     pub default_partitions: u32,
@@ -21,6 +24,23 @@ pub struct BrokerConfig {
     pub compression: Compression,
     #[serde(skip, default)]
     pub default_retention: RetentionConfig,
+    #[cfg(feature = "notify")]
+    #[serde(skip)]
+    pub notifier: Option<Arc<dyn NotifyPlugin>>,
+}
+
+impl std::fmt::Debug for BrokerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("BrokerConfig");
+        s.field("data_dir", &self.data_dir);
+        s.field("default_partitions", &self.default_partitions);
+        s.field("auto_create_topics", &self.auto_create_topics);
+        s.field("compression", &self.compression);
+        s.field("default_retention", &self.default_retention);
+        #[cfg(feature = "notify")]
+        s.field("notifier", &self.notifier.as_ref().map(|n| n.name()));
+        s.finish()
+    }
 }
 
 impl BrokerConfig {
@@ -31,7 +51,15 @@ impl BrokerConfig {
             auto_create_topics: true,
             compression: Compression::None,
             default_retention: RetentionConfig::default(),
+            #[cfg(feature = "notify")]
+            notifier: None,
         }
+    }
+
+    #[cfg(feature = "notify")]
+    pub fn with_notifier(mut self, notifier: Arc<dyn NotifyPlugin>) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 }
 
@@ -45,6 +73,21 @@ pub struct Broker {
     config: BrokerConfig,
     topics: RwLock<HashMap<String, Arc<Topic>>>,
     groups: Mutex<HashMap<String, Arc<Mutex<ConsumerGroup>>>>,
+    #[cfg(feature = "notify")]
+    notifier: Option<Arc<dyn NotifyPlugin>>,
+}
+
+impl std::fmt::Debug for Broker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Broker");
+        s.field("config", &self.config);
+        if let Ok(topics) = self.topics.read() {
+            s.field("topics", &topics.keys().collect::<Vec<_>>());
+        }
+        #[cfg(feature = "notify")]
+        s.field("notifier", &self.notifier.as_ref().map(|n| n.name()));
+        s.finish()
+    }
 }
 
 impl Broker {
@@ -99,10 +142,15 @@ impl Broker {
             }
         }
 
+        #[cfg(feature = "notify")]
+        let notifier = config.notifier.clone();
+
         Ok(Arc::new(Broker {
             config,
             topics: RwLock::new(topics),
             groups: Mutex::new(groups),
+            #[cfg(feature = "notify")]
+            notifier,
         }))
     }
 
@@ -229,5 +277,64 @@ impl Broker {
 
         let mut group = group_arc.lock().unwrap();
         group.commit(offsets)
+    }
+
+    /// Send a notification after a successful append. Fire-and-forget.
+    /// Errors are logged but never propagated to the caller.
+    /// If a tokio runtime is available, spawns the notification asynchronously.
+    /// Otherwise, the notification is skipped with a warning.
+    #[cfg(feature = "notify")]
+    pub(crate) fn notify_append(&self, notification: AppendNotification) {
+        if let Some(ref notifier) = self.notifier {
+            let notifier = Arc::clone(notifier);
+            let plugin_name = notifier.name().to_string();
+
+            // Try to get the current tokio runtime handle
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    // Use AssertUnwindSafe to catch panics
+                    let result = async { notifier.on_append(&notification).await }.await;
+
+                    if let Err(e) = result {
+                        tracing::warn!(plugin = %plugin_name, error = %e, "notification failed");
+                    }
+                });
+            } else {
+                tracing::warn!(plugin = %plugin_name, "no tokio runtime available for notification");
+            }
+        }
+    }
+
+    /// Send a batch notification after a successful batch append. Fire-and-forget.
+    #[cfg(feature = "notify")]
+    pub(crate) fn notify_batch(&self, notification: AppendNotification) {
+        if let Some(ref notifier) = self.notifier {
+            let notifier = Arc::clone(notifier);
+            let plugin_name = notifier.name().to_string();
+
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let result = notifier.on_batch(&notification).await;
+
+                    if let Err(e) = result {
+                        tracing::warn!(plugin = %plugin_name, error = %e, "batch notification failed");
+                    }
+                });
+            } else {
+                tracing::warn!(plugin = %plugin_name, "no tokio runtime available for batch notification");
+            }
+        }
+    }
+
+    /// Check if a notifier is configured.
+    #[cfg(feature = "notify")]
+    pub fn has_notifier(&self) -> bool {
+        self.notifier.is_some()
+    }
+
+    /// Get a reference to the notifier for testing.
+    #[cfg(feature = "notify")]
+    pub fn notifier(&self) -> Option<&Arc<dyn NotifyPlugin>> {
+        self.notifier.as_ref()
     }
 }

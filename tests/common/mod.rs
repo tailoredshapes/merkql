@@ -14,24 +14,13 @@ use std::time::{Duration, Instant};
 // ---------------------------------------------------------------------------
 
 pub fn setup_broker(dir: &Path, partitions: u32) -> BrokerRef {
-    let config = BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: partitions,
-        auto_create_topics: true,
-        compression: merkql::compression::Compression::None,
-        default_retention: merkql::topic::RetentionConfig::default(),
-    };
+    let mut config = BrokerConfig::new(dir);
+    config.default_partitions = partitions;
     Broker::open(config).unwrap()
 }
 
 pub fn broker_config(dir: &Path) -> BrokerConfig {
-    BrokerConfig {
-        data_dir: dir.to_path_buf(),
-        default_partitions: 1,
-        auto_create_topics: true,
-        compression: merkql::compression::Compression::None,
-        default_retention: merkql::topic::RetentionConfig::default(),
-    }
+    BrokerConfig::new(dir)
 }
 
 pub fn produce_n(
