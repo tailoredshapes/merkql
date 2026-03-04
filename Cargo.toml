@@ -1,5 +1,14 @@
 [workspace]
-members = [".", "examples/sensor-pipeline", "examples/audit-trail", "examples/event-sourced-cart"]
+members = [
+    ".",
+    "examples/sensor-pipeline",
+    "examples/audit-trail",
+    "examples/event-sourced-cart",
+    "merkql-notify",
+    "merkql-notify-webhook",
+    "merkql-notify-sns",
+    "merkql-notify-sqs",
+]
 
 [package]
 name = "merkql"
@@ -23,6 +32,14 @@ chrono = { version = "0.4", features = ["serde"] }
 lz4_flex = "0.11"
 fs2 = "0.4"
 crc32fast = "1"
+merkql-notify = { path = "merkql-notify", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+tracing = { version = "0.1", optional = true }
+hex = { version = "0.4", optional = true }
+
+[features]
+default = []
+notify = ["dep:merkql-notify", "dep:tokio", "dep:tracing", "dep:hex"]
 
 [dev-dependencies]
 tempfile = "3"
