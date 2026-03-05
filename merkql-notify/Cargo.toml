@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Notification trait and types for merkql event streaming"
 license = "MIT"
+repository = "https://github.com/tailoredshapes/merkql"
 keywords = ["kafka", "event-streaming", "notification", "webhook"]
 categories = ["data-structures", "asynchronous"]
 
@@ -14,7 +15,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 cucumber = "0.21"
 futures = "0.3"
-merkql = { path = "..", features = ["notify"] }
+# merkql = { version = "0.1", features = ["notify"] }  # re-enable after merkql 0.1.1 with notify feature
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

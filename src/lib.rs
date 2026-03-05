@@ -40,3 +40,6 @@ pub mod record;
 pub mod store;
 pub mod topic;
 pub mod tree;
+
+#[cfg(feature = "notify")]
+pub mod notify;

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(feature = "notify")]
-use merkql_notify::{AppendNotification, NotifyPlugin};
+use crate::notify::{AppendNotification, NotifyPlugin};
 
 pub type BrokerRef = Arc<Broker>;
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use aws_sdk_sqs::Client as SqsClient;
-use merkql_notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
+use merkql::notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

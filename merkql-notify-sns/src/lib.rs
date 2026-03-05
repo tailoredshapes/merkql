@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use aws_sdk_sns::Client as SnsClient;
 use aws_sdk_sns::types::MessageAttributeValue;
-use merkql_notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
+use merkql::notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

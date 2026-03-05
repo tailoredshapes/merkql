@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::Utc;
 
 #[cfg(feature = "notify")]
-use merkql_notify::AppendNotification;
+use crate::notify::AppendNotification;
 
 /// Kafka-compatible producer. Routes records through the broker's topics.
 pub struct Producer {

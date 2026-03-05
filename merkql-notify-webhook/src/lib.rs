@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
-use merkql_notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
+use merkql::notify::{AppendNotification, NotifyError, NotifyPlugin, NotifyResult};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;

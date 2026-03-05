@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "AWS SNS notification plugin for merkql"
 license = "MIT"
+repository = "https://github.com/tailoredshapes/merkql"
 keywords = ["kafka", "event-streaming", "aws", "sns", "notification"]
 categories = ["web-programming", "asynchronous"]
 
 [dependencies]
-merkql-notify = { path = "../merkql-notify" }
+merkql = { version = "0.1.1", path = "..", features = ["notify"] }
 aws-sdk-sns = "1"
 aws-config = "1"
 serde = { version = "1", features = ["derive"] }
