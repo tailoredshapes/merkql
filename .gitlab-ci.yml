@@ -4,6 +4,8 @@ stages:
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
+  # Use tmpfs for test temp dirs — overlay fs kills fsync-heavy workloads (630x slowdown)
+  TMPDIR: /dev/shm
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}
@@ -14,7 +16,9 @@ cache:
 
 test:
   stage: test
-  timeout: 30m
+  tags:
+    - shell
+  timeout: 10m
   script:
     - cargo test --release -- --skip generate_jepsen_report
   rules:
@@ -24,6 +28,8 @@ test:
 
 publish:
   stage: publish
+  tags:
+    - shell
   script:
     - echo "Publishing ${CI_COMMIT_TAG} to crates.io..."
     - cargo publish --token "$CARGO_REGISTRY_TOKEN"
