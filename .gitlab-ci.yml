@@ -32,7 +32,7 @@ publish:
     - shell
   script:
     - echo "Publishing ${CI_COMMIT_TAG} to crates.io..."
-    - cargo publish --token "$CARGO_REGISTRY_TOKEN"
+    - cargo publish --allow-dirty --token "$CARGO_REGISTRY_TOKEN"
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
   needs:
