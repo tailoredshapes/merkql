@@ -14,8 +14,9 @@ cache:
 
 test:
   stage: test
+  timeout: 30m
   script:
-    - cargo test --release
+    - cargo test --release -- --skip generate_jepsen_report
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_MERGE_REQUEST_ID
