@@ -28,10 +28,10 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     fs::rename(&tmp, path).context("renaming atomic write")?;
 
     // fsync parent directory to ensure the directory entry is durable (NFS safety)
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
 
     Ok(())
@@ -105,6 +105,7 @@ impl ConsumerGroup {
         let lock_path = self.dir.join("group.lock");
         let lock_file = fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&lock_path)
             .context("opening group lock file")?;

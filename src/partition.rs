@@ -1,6 +1,7 @@
 use crate::compression::Compression;
 use crate::hash::Hash;
 use crate::record::Record;
+use crate::segment::Segment;
 use crate::store::ObjectStore;
 use crate::tree::{MerkleTree, TreeSnapshot};
 use anyhow::{Context, Result};
@@ -13,6 +14,17 @@ const INDEX_ENTRY_SIZE: usize = 36;
 
 /// CRC32 checksum size in bytes.
 const CRC_SIZE: usize = 4;
+
+/// Partition metadata for multi-segment mode
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PartitionMeta {
+    /// ID of the currently active segment
+    active_segment_id: u32,
+    /// Maximum records per segment before rolling (None = no rolling)
+    max_segment_records: Option<u64>,
+    /// Whether this partition uses segmented mode
+    segmented: bool,
+}
 
 /// Atomically write checksummed data to a file using temp+fsync+rename+fsync-parent.
 /// Format: [4 bytes CRC32 of data][data...]
@@ -27,10 +39,10 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     fs::rename(&tmp, path).context("renaming atomic write")?;
 
     // fsync parent directory to ensure the directory entry is durable (NFS safety)
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
 
     Ok(())
@@ -58,6 +70,7 @@ fn acquire_partition_lock(dir: &Path) -> Result<fs::File> {
     let lock_path = dir.join("partition.lock");
     let lock_file = fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(&lock_path)
         .context("opening partition lock file")?;
@@ -65,23 +78,78 @@ fn acquire_partition_lock(dir: &Path) -> Result<fs::File> {
     Ok(lock_file)
 }
 
+/// Storage mode for a partition
+enum PartitionStorage {
+    /// Legacy single-file mode (backward compatible)
+    Legacy {
+        store: ObjectStore,
+        tree: MerkleTree,
+        index_writer: BufWriter<fs::File>,
+    },
+    /// Multi-segment mode
+    Segmented {
+        segments: Vec<Segment>,
+        active_segment_idx: usize,
+    },
+}
+
 /// A single append-only partition backed by a merkle tree.
 pub struct Partition {
     id: u32,
     dir: PathBuf,
-    store: ObjectStore,
-    tree: MerkleTree,
+    storage: PartitionStorage,
     next_offset: u64,
-    index_writer: BufWriter<fs::File>,
     min_valid_offset: u64,
+    compression: Compression,
+    max_segment_records: Option<u64>,
 }
 
 impl Partition {
     /// Open or create a partition at the given directory.
+    /// Uses legacy single-segment mode by default for backward compatibility.
     pub fn open(id: u32, dir: impl Into<PathBuf>, compression: Compression) -> Result<Self> {
+        Self::open_with_config(id, dir, compression, None)
+    }
+
+    /// Open or create a partition with segment rolling configuration.
+    ///
+    /// # Arguments
+    /// * `max_segment_records` - Maximum records per segment before rolling.
+    ///   `None` means no rolling (single segment/legacy mode).
+    pub fn open_with_config(
+        id: u32,
+        dir: impl Into<PathBuf>,
+        compression: Compression,
+        max_segment_records: Option<u64>,
+    ) -> Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir).context("creating partition dir")?;
 
+        let segments_dir = dir.join("segments");
+        let legacy_pack = dir.join("objects.pack");
+        let legacy_index = dir.join("offsets.idx");
+
+        // Determine if we should use segmented mode:
+        // 1. If segments/ directory exists, use segmented mode
+        // 2. If max_segment_records is set AND no legacy files exist, use segmented mode
+        // 3. Otherwise, use legacy mode
+        let use_segmented = segments_dir.exists()
+            || (max_segment_records.is_some() && !legacy_pack.exists() && !legacy_index.exists());
+
+        if use_segmented {
+            Self::open_segmented(id, dir, compression, max_segment_records)
+        } else {
+            Self::open_legacy(id, dir, compression, max_segment_records)
+        }
+    }
+
+    /// Open partition in legacy (single-file) mode
+    fn open_legacy(
+        id: u32,
+        dir: PathBuf,
+        compression: Compression,
+        max_segment_records: Option<u64>,
+    ) -> Result<Self> {
         let pack_path = dir.join("objects.pack");
         let objects_dir = dir.join("objects");
         let store = ObjectStore::open(pack_path, objects_dir, compression)?;
@@ -93,18 +161,17 @@ impl Partition {
                 Ok(Some(data)) => {
                     match bincode::deserialize::<TreeSnapshot>(&data) {
                         Ok(snap) => MerkleTree::from_snapshot(snap),
-                        Err(_) => MerkleTree::new(), // corrupt bincode → empty tree
+                        Err(_) => MerkleTree::new(),
                     }
                 }
-                Ok(None) => MerkleTree::new(), // CRC mismatch → empty tree (will rebuild)
-                Err(_) => MerkleTree::new(),   // read error → empty tree
+                Ok(None) => MerkleTree::new(),
+                Err(_) => MerkleTree::new(),
             }
         } else {
             MerkleTree::new()
         };
 
-        // Determine next offset from index size using file handle (not metadata on path).
-        // Truncate partial entries and validate tail entries against the object store.
+        // Determine next offset from index size
         let index_path = dir.join("offsets.idx");
         let next_offset = if index_path.exists() {
             let mut f = fs::OpenOptions::new()
@@ -126,8 +193,7 @@ impl Partition {
 
             let mut entry_count = valid_len / INDEX_ENTRY_SIZE as u64;
 
-            // Validate tail entries: walk backwards, removing entries with bad CRC
-            // or hashes missing from the object store (crash during write)
+            // Validate tail entries
             while entry_count > 0 {
                 let entry_pos = (entry_count - 1) * INDEX_ENTRY_SIZE as u64;
                 f.seek(SeekFrom::Start(entry_pos))
@@ -148,20 +214,16 @@ impl Partition {
 
                 let computed_crc = crc32fast::hash(&hash_buf);
                 if stored_crc != computed_crc {
-                    // CRC mismatch — truncate this entry and keep checking
                     entry_count -= 1;
                     continue;
                 }
 
-                // CRC valid — check if the object exists in the pack store
                 let hash = Hash(hash_buf);
                 if !store.exists(&hash) {
-                    // Object missing from pack — index wrote but pack didn't flush
                     entry_count -= 1;
                     continue;
                 }
 
-                // This entry is good — everything before it is fine too
                 break;
             }
 
@@ -179,13 +241,13 @@ impl Partition {
             0
         };
 
-        // Restore retention marker with CRC validation
+        // Restore retention marker
         let retention_path = dir.join("retention.bin");
         let min_valid_offset = if retention_path.exists() {
             match atomic_read(&retention_path) {
                 Ok(Some(data)) => bincode::deserialize(&data).unwrap_or(0),
-                Ok(None) => 0, // CRC mismatch → safe default
-                Err(_) => 0,   // read error → safe default
+                Ok(None) => 0,
+                Err(_) => 0,
             }
         } else {
             0
@@ -202,11 +264,106 @@ impl Partition {
         Ok(Partition {
             id,
             dir,
-            store,
-            tree,
+            storage: PartitionStorage::Legacy {
+                store,
+                tree,
+                index_writer,
+            },
             next_offset,
-            index_writer,
             min_valid_offset,
+            compression,
+            max_segment_records,
+        })
+    }
+
+    /// Open partition in segmented mode
+    fn open_segmented(
+        id: u32,
+        dir: PathBuf,
+        compression: Compression,
+        max_segment_records: Option<u64>,
+    ) -> Result<Self> {
+        let segments_dir = dir.join("segments");
+        fs::create_dir_all(&segments_dir).context("creating segments dir")?;
+
+        // Load existing segments
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut max_segment_id: u32 = 0;
+
+        if segments_dir.exists() {
+            let mut segment_dirs: Vec<_> = fs::read_dir(&segments_dir)
+                .context("reading segments dir")?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect();
+
+            segment_dirs.sort_by_key(|e| e.file_name());
+
+            for entry in segment_dirs {
+                let seg_name = entry.file_name();
+                let seg_name = seg_name.to_string_lossy();
+
+                // Parse segment ID from "seg-NNNNNN" format
+                if let Some(id_str) = seg_name.strip_prefix("seg-")
+                    && let Ok(seg_id) = id_str.parse::<u32>()
+                {
+                    // Cold start optimization: sealed segments load metadata only
+                    // This avoids scanning the full index on startup
+                    let segment = Segment::open_sealed_metadata_only(seg_id, entry.path(), compression)?;
+                    max_segment_id = max_segment_id.max(seg_id);
+                    segments.push(segment);
+                }
+            }
+        }
+
+        // If no segments exist, create the first one
+        if segments.is_empty() {
+            let seg_dir = segments_dir.join("seg-000000");
+            let segment = Segment::create(0, seg_dir, 0, compression)?;
+            segments.push(segment);
+        }
+
+        // Find the active (non-sealed) segment
+        let active_segment_idx = segments
+            .iter()
+            .position(|s| !s.is_sealed())
+            .unwrap_or(segments.len() - 1);
+
+        // Calculate next_offset from the active segment
+        let next_offset = segments[active_segment_idx].next_offset();
+
+        // Restore retention marker
+        let retention_path = dir.join("retention.bin");
+        let min_valid_offset = if retention_path.exists() {
+            match atomic_read(&retention_path) {
+                Ok(Some(data)) => bincode::deserialize(&data).unwrap_or(0),
+                Ok(None) => 0,
+                Err(_) => 0,
+            }
+        } else {
+            0
+        };
+
+        // Save partition metadata
+        let meta = PartitionMeta {
+            active_segment_id: segments[active_segment_idx].id(),
+            max_segment_records,
+            segmented: true,
+        };
+        let meta_data = bincode::serialize(&meta).context("serializing partition meta")?;
+        atomic_write(&dir.join("partition.meta"), &meta_data)?;
+
+        Ok(Partition {
+            id,
+            dir,
+            storage: PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            },
+            next_offset,
+            min_valid_offset,
+            compression,
+            max_segment_records,
         })
     }
 
@@ -228,38 +385,54 @@ impl Partition {
     pub fn append(&mut self, record: &mut Record) -> Result<u64> {
         let _lock = acquire_partition_lock(&self.dir)?;
 
+        // Check if we need to roll to a new segment (segmented mode only)
+        if let PartitionStorage::Segmented { ref segments, active_segment_idx } = self.storage
+            && let Some(max_records) = self.max_segment_records
+        {
+            let active_segment = &segments[active_segment_idx];
+            if active_segment.record_count() >= max_records {
+                self.roll_segment()?;
+            }
+        }
+
         let offset = self.next_offset;
         record.offset = offset;
         record.partition = self.id;
 
-        // Store the record
-        let record_bytes = record.serialize();
-        let record_hash = self.store.put(&record_bytes)?;
+        match &mut self.storage {
+            PartitionStorage::Legacy { store, tree, index_writer } => {
+                // Store the record
+                let record_bytes = record.serialize();
+                let record_hash = store.put(&record_bytes)?;
 
-        // Append to merkle tree
-        self.tree.append(record_hash, offset, &self.store)?;
+                // Append to merkle tree
+                tree.append(record_hash, offset, store)?;
 
-        // Append to offset index: [4 bytes CRC32][32 bytes hash]
-        let entry_crc = crc32fast::hash(&record_hash.0);
-        self.index_writer
-            .write_all(&entry_crc.to_le_bytes())
-            .context("writing index entry CRC")?;
-        self.index_writer
-            .write_all(&record_hash.0)
-            .context("writing index entry hash")?;
+                // Append to offset index
+                let entry_crc = crc32fast::hash(&record_hash.0);
+                index_writer
+                    .write_all(&entry_crc.to_le_bytes())
+                    .context("writing index entry CRC")?;
+                index_writer
+                    .write_all(&record_hash.0)
+                    .context("writing index entry hash")?;
 
-        // Flush and fsync index + pack file
-        self.index_writer.flush().context("flushing index")?;
-        self.index_writer
-            .get_ref()
-            .sync_all()
-            .context("syncing index")?;
-        self.store.flush()?;
+                // Flush and fsync
+                index_writer.flush().context("flushing index")?;
+                index_writer.get_ref().sync_all().context("syncing index")?;
+                store.flush()?;
 
-        // Persist tree snapshot atomically (with CRC)
-        let snap = self.tree.snapshot();
-        let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
-        atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
+                // Persist tree snapshot atomically
+                let snap = tree.snapshot();
+                let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
+                atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
+            }
+            PartitionStorage::Segmented { segments, active_segment_idx } => {
+                let segment = &mut segments[*active_segment_idx];
+                segment.append(record)?;
+                segment.flush()?;
+            }
+        }
 
         self.next_offset += 1;
         Ok(offset)
@@ -273,43 +446,74 @@ impl Partition {
 
         let mut offsets = Vec::with_capacity(records.len());
 
-        for record in records.iter_mut() {
-            let offset = self.next_offset;
-            record.offset = offset;
-            record.partition = self.id;
+        match &mut self.storage {
+            PartitionStorage::Legacy { store, tree, index_writer } => {
+                for record in records.iter_mut() {
+                    let offset = self.next_offset;
+                    record.offset = offset;
+                    record.partition = self.id;
 
-            // Store the record
-            let record_bytes = record.serialize();
-            let record_hash = self.store.put(&record_bytes)?;
+                    let record_bytes = record.serialize();
+                    let record_hash = store.put(&record_bytes)?;
+                    tree.append(record_hash, offset, store)?;
 
-            // Append to merkle tree
-            self.tree.append(record_hash, offset, &self.store)?;
+                    let entry_crc = crc32fast::hash(&record_hash.0);
+                    index_writer
+                        .write_all(&entry_crc.to_le_bytes())
+                        .context("writing index entry CRC")?;
+                    index_writer
+                        .write_all(&record_hash.0)
+                        .context("writing index entry hash")?;
 
-            // Buffer index entry: [4 bytes CRC32][32 bytes hash]
-            let entry_crc = crc32fast::hash(&record_hash.0);
-            self.index_writer
-                .write_all(&entry_crc.to_le_bytes())
-                .context("writing index entry CRC")?;
-            self.index_writer
-                .write_all(&record_hash.0)
-                .context("writing index entry hash")?;
+                    self.next_offset += 1;
+                    offsets.push(offset);
+                }
 
-            self.next_offset += 1;
-            offsets.push(offset);
+                // Single flush + fsync for entire batch
+                index_writer.flush().context("flushing index")?;
+                index_writer.get_ref().sync_all().context("syncing index")?;
+                store.flush()?;
+
+                let snap = tree.snapshot();
+                let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
+                atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
+            }
+            PartitionStorage::Segmented { segments, active_segment_idx } => {
+                for record in records.iter_mut() {
+                    // Check if we need to roll
+                    if let Some(max_records) = self.max_segment_records {
+                        let active_segment = &segments[*active_segment_idx];
+                        if active_segment.record_count() >= max_records {
+                            // We need to flush before rolling
+                            segments[*active_segment_idx].flush()?;
+
+                            // Roll to new segment
+                            let current_segment = &mut segments[*active_segment_idx];
+                            current_segment.seal()?;
+
+                            let new_id = current_segment.id() + 1;
+                            let seg_dir = self.dir.join("segments").join(format!("seg-{:06}", new_id));
+                            let new_segment = Segment::create(new_id, seg_dir, self.next_offset, self.compression)?;
+                            segments.push(new_segment);
+                            *active_segment_idx = segments.len() - 1;
+                        }
+                    }
+
+                    let offset = self.next_offset;
+                    record.offset = offset;
+                    record.partition = self.id;
+
+                    let segment = &mut segments[*active_segment_idx];
+                    segment.append(record)?;
+
+                    self.next_offset += 1;
+                    offsets.push(offset);
+                }
+
+                // Single flush for entire batch
+                segments[*active_segment_idx].flush()?;
+            }
         }
-
-        // Single flush + fsync for entire batch
-        self.index_writer.flush().context("flushing index")?;
-        self.index_writer
-            .get_ref()
-            .sync_all()
-            .context("syncing index")?;
-        self.store.flush()?;
-
-        // Single atomic snapshot write for entire batch (with CRC)
-        let snap = self.tree.snapshot();
-        let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
-        atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
 
         Ok(offsets)
     }
@@ -321,42 +525,117 @@ impl Partition {
             return Ok(None);
         }
 
-        let record_hash = self.read_index_entry(offset)?;
-        let data = self.store.get(&record_hash)?;
-        let record = Record::deserialize(&data)?;
-        Ok(Some(record))
+        match &self.storage {
+            PartitionStorage::Legacy { store, .. } => {
+                let record_hash = self.read_index_entry_legacy(offset)?;
+                let data = store.get(&record_hash)?;
+                let record = Record::deserialize(&data)?;
+                Ok(Some(record))
+            }
+            PartitionStorage::Segmented { segments, .. } => {
+                // Find the segment containing this offset
+                for segment in segments.iter() {
+                    if segment.contains(offset) {
+                        return segment.read(offset);
+                    }
+                }
+                Ok(None)
+            }
+        }
     }
 
     /// Read a range of records [from, to) (exclusive end).
+    /// Uses batch operations for efficiency.
     pub fn read_range(&self, from: u64, to: u64) -> Result<Vec<Record>> {
         let start = from.max(self.min_valid_offset);
         let end = to.min(self.next_offset);
-        let mut records = Vec::new();
-        for offset in start..end {
-            if let Some(record) = self.read(offset)? {
-                records.push(record);
+
+        if start >= end {
+            return Ok(Vec::new());
+        }
+
+        match &self.storage {
+            PartitionStorage::Legacy { store, .. } => {
+                let entries = self.read_index_entries_batch_legacy(start, end)?;
+                if entries.is_empty() {
+                    return Ok(Vec::new());
+                }
+
+                let hashes: Vec<Hash> = entries.iter().map(|(_, h)| *h).collect();
+                let objects = store.get_batch(&hashes)?;
+
+                let mut records = Vec::with_capacity(objects.len());
+                for (_hash, data) in objects {
+                    let record = Record::deserialize(&data)?;
+                    records.push(record);
+                }
+                Ok(records)
+            }
+            PartitionStorage::Segmented { segments, .. } => {
+                let mut records = Vec::new();
+
+                // Read from each overlapping segment
+                for segment in segments.iter() {
+                    if segment.overlaps(start, end) {
+                        let segment_records = segment.read_range(start, end)?;
+                        records.extend(segment_records);
+                    }
+                }
+
+                // Sort by offset to ensure order
+                records.sort_by_key(|r| r.offset);
+                Ok(records)
             }
         }
-        Ok(records)
     }
 
     /// Get the current merkle root hash.
     pub fn merkle_root(&self) -> Result<Option<Hash>> {
-        self.tree.root(&self.store)
+        match &self.storage {
+            PartitionStorage::Legacy { store, tree, .. } => tree.root(store),
+            PartitionStorage::Segmented { segments, active_segment_idx } => {
+                // For segmented mode, return the active segment's merkle root
+                // In a full implementation, we'd have a partition-level merkle tree
+                segments[*active_segment_idx].merkle_root()
+            }
+        }
     }
 
     /// Generate a merkle inclusion proof for a given offset.
     pub fn proof(&self, offset: u64) -> Result<Option<crate::tree::Proof>> {
-        self.tree.proof(offset, &self.store)
+        match &self.storage {
+            PartitionStorage::Legacy { store, tree, .. } => tree.proof(offset, store),
+            PartitionStorage::Segmented { .. } => {
+                // For segmented mode, proofs are segment-local
+                // A full implementation would need cross-segment proofs
+                Ok(None)
+            }
+        }
     }
 
     /// Verify a merkle proof.
     pub fn verify_proof(&self, proof: &crate::tree::Proof) -> Result<bool> {
-        MerkleTree::verify_proof(proof, &self.store)
+        match &self.storage {
+            PartitionStorage::Legacy { store, .. } => MerkleTree::verify_proof(proof, store),
+            PartitionStorage::Segmented { segments, .. } => {
+                // Try to verify against any segment's store
+                for segment in segments.iter() {
+                    if let Ok(true) = MerkleTree::verify_proof(proof, segment.store()) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 
     pub fn store(&self) -> &ObjectStore {
-        &self.store
+        match &self.storage {
+            PartitionStorage::Legacy { store, .. } => store,
+            PartitionStorage::Segmented { segments, active_segment_idx } => {
+                segments[*active_segment_idx].store()
+            }
+        }
     }
 
     /// Advance the retention window. Records below new_min will return None on read.
@@ -370,14 +649,93 @@ impl Partition {
         Ok(())
     }
 
-    fn read_index_entry(&self, offset: u64) -> Result<Hash> {
+    /// Compact the partition by removing sealed segments whose data is entirely
+    /// below the retention window.
+    pub fn compact(&mut self) -> Result<usize> {
+        match &mut self.storage {
+            PartitionStorage::Legacy { .. } => {
+                // Legacy mode doesn't support compaction
+                Ok(0)
+            }
+            PartitionStorage::Segmented { segments, active_segment_idx } => {
+                let mut removed = 0;
+                let mut new_segments = Vec::new();
+                let mut new_active_idx = 0;
+
+                for (idx, segment) in segments.drain(..).enumerate() {
+                    // Keep the active segment
+                    if idx == *active_segment_idx {
+                        new_active_idx = new_segments.len();
+                        new_segments.push(segment);
+                        continue;
+                    }
+
+                    // Keep unsealed segments
+                    if !segment.is_sealed() {
+                        new_segments.push(segment);
+                        continue;
+                    }
+
+                    // Check if entire segment is below retention
+                    if segment.next_offset() <= self.min_valid_offset {
+                        // Delete this segment
+                        segment.delete()?;
+                        removed += 1;
+                    } else {
+                        new_segments.push(segment);
+                    }
+                }
+
+                *segments = new_segments;
+                *active_segment_idx = new_active_idx;
+
+                Ok(removed)
+            }
+        }
+    }
+
+    /// Roll to a new segment, sealing the current active segment.
+    fn roll_segment(&mut self) -> Result<()> {
+        if let PartitionStorage::Segmented { segments, active_segment_idx } = &mut self.storage {
+            // Seal the current segment
+            segments[*active_segment_idx].seal()?;
+
+            // Create a new segment
+            let new_id = segments[*active_segment_idx].id() + 1;
+            let seg_dir = self.dir.join("segments").join(format!("seg-{:06}", new_id));
+            let new_segment = Segment::create(new_id, seg_dir, self.next_offset, self.compression)?;
+            segments.push(new_segment);
+            *active_segment_idx = segments.len() - 1;
+
+            // Update partition metadata
+            let meta = PartitionMeta {
+                active_segment_id: new_id,
+                max_segment_records: self.max_segment_records,
+                segmented: true,
+            };
+            let meta_data = bincode::serialize(&meta).context("serializing partition meta")?;
+            atomic_write(&self.dir.join("partition.meta"), &meta_data)?;
+        }
+        Ok(())
+    }
+
+    /// Get the number of segments (1 for legacy mode)
+    pub fn segment_count(&self) -> usize {
+        match &self.storage {
+            PartitionStorage::Legacy { .. } => 1,
+            PartitionStorage::Segmented { segments, .. } => segments.len(),
+        }
+    }
+
+    // --- Legacy mode helpers ---
+
+    fn read_index_entry_legacy(&self, offset: u64) -> Result<Hash> {
         let index_path = self.dir.join("offsets.idx");
         let mut file = fs::File::open(&index_path).context("opening offset index")?;
         let seek_pos = offset * INDEX_ENTRY_SIZE as u64;
-        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(seek_pos))
+        file.seek(SeekFrom::Start(seek_pos))
             .context("seeking in index")?;
 
-        // Read CRC32 + hash
         let mut crc_buf = [0u8; CRC_SIZE];
         file.read_exact(&mut crc_buf)
             .context("reading index entry CRC")?;
@@ -398,6 +756,47 @@ impl Partition {
         }
 
         Ok(Hash(hash_buf))
+    }
+
+    fn read_index_entries_batch_legacy(&self, from: u64, to: u64) -> Result<Vec<(u64, Hash)>> {
+        if from >= to {
+            return Ok(Vec::new());
+        }
+
+        let index_path = self.dir.join("offsets.idx");
+        let mut file = fs::File::open(&index_path).context("opening offset index for batch read")?;
+
+        let seek_pos = from * INDEX_ENTRY_SIZE as u64;
+        file.seek(SeekFrom::Start(seek_pos))
+            .context("seeking in index for batch read")?;
+
+        let count = (to - from) as usize;
+        let mut entries = Vec::with_capacity(count);
+
+        for offset in from..to {
+            let mut crc_buf = [0u8; CRC_SIZE];
+            file.read_exact(&mut crc_buf)
+                .with_context(|| format!("reading index entry CRC at offset {}", offset))?;
+            let stored_crc = u32::from_le_bytes(crc_buf);
+
+            let mut hash_buf = [0u8; 32];
+            file.read_exact(&mut hash_buf)
+                .with_context(|| format!("reading index entry hash at offset {}", offset))?;
+
+            let computed_crc = crc32fast::hash(&hash_buf);
+            if stored_crc != computed_crc {
+                anyhow::bail!(
+                    "index entry CRC mismatch at offset {}: stored={:#010x} computed={:#010x}",
+                    offset,
+                    stored_crc,
+                    computed_crc
+                );
+            }
+
+            entries.push((offset, Hash(hash_buf)));
+        }
+
+        Ok(entries)
     }
 }
 
@@ -464,7 +863,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        // Write some records
         {
             let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
             for i in 0..3 {
@@ -473,14 +871,12 @@ mod tests {
             }
         }
 
-        // Reopen and verify
         let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
         assert_eq!(part.next_offset(), 3);
 
         let r = part.read(1).unwrap().unwrap();
         assert_eq!(r.value, "v1");
 
-        // Can continue appending
         let mut rec = make_record("t", "v3");
         let offset = part.append(&mut rec).unwrap();
         assert_eq!(offset, 3);
@@ -541,11 +937,9 @@ mod tests {
         part.advance_retention(5).unwrap();
         assert_eq!(part.min_valid_offset(), 5);
 
-        // Old records return None
         for i in 0..5 {
             assert!(part.read(i).unwrap().is_none());
         }
-        // New records still readable
         for i in 5..10 {
             assert!(part.read(i).unwrap().is_some());
         }
@@ -608,7 +1002,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        // Write records
         {
             let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
             for i in 0..5 {
@@ -617,13 +1010,11 @@ mod tests {
             }
         }
 
-        // Corrupt the tree.snapshot CRC
         let snapshot_path = part_dir.join("tree.snapshot");
         let mut data = fs::read(&snapshot_path).unwrap();
-        data[0] ^= 0xFF; // flip a CRC byte
+        data[0] ^= 0xFF;
         fs::write(&snapshot_path, &data).unwrap();
 
-        // Reopen — should recover (empty tree is fine, records still readable via index)
         let part = Partition::open(0, &part_dir, Compression::None).unwrap();
         assert_eq!(part.next_offset(), 5);
         let r = part.read(2).unwrap().unwrap();
@@ -644,16 +1035,13 @@ mod tests {
             part.advance_retention(5).unwrap();
         }
 
-        // Corrupt the retention.bin CRC
         let retention_path = part_dir.join("retention.bin");
         let mut data = fs::read(&retention_path).unwrap();
         data[0] ^= 0xFF;
         fs::write(&retention_path, &data).unwrap();
 
-        // Reopen — should default to min_valid_offset = 0
         let part = Partition::open(0, &part_dir, Compression::None).unwrap();
         assert_eq!(part.min_valid_offset(), 0);
-        // All records should be readable
         for i in 0..10 {
             assert!(part.read(i).unwrap().is_some());
         }
@@ -667,7 +1055,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        // Write initial records
         {
             let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
             let mut rec = make_record("t", "seed");
@@ -692,12 +1079,274 @@ mod tests {
             h.join().unwrap();
         }
 
-        // Verify: reopen and check we have all records (1 seed + 10 from threads)
-        // Note: each thread reopens with its own next_offset, so with flock they
-        // serialize but each thread's view may be stale. The key correctness property
-        // is that the lock file prevents concurrent file corruption.
-        // In practice, a single Partition instance is used with the RwLock in Topic.
         let part = Partition::open(0, &*part_dir, Compression::None).unwrap();
-        assert!(part.next_offset() >= 1); // at least the seed record survived
+        assert!(part.next_offset() >= 1);
+    }
+
+    #[test]
+    fn read_range_batch_correctness() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
+
+        for i in 0..100 {
+            let mut rec = make_record("t", &format!("batch-value-{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        let range = part.read_range(10, 20).unwrap();
+        assert_eq!(range.len(), 10);
+        for (i, record) in range.iter().enumerate() {
+            assert_eq!(record.value, format!("batch-value-{}", i + 10));
+            assert_eq!(record.offset, (i + 10) as u64);
+        }
+
+        let full = part.read_range(0, 100).unwrap();
+        assert_eq!(full.len(), 100);
+
+        let empty = part.read_range(50, 50).unwrap();
+        assert!(empty.is_empty());
+
+        let clamped = part.read_range(90, 200).unwrap();
+        assert_eq!(clamped.len(), 10);
+        assert_eq!(clamped[0].value, "batch-value-90");
+    }
+
+    #[test]
+    fn read_range_with_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut part = Partition::open(0, dir.path().join("p0"), Compression::None).unwrap();
+
+        for i in 0..50 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        part.advance_retention(25).unwrap();
+
+        let range = part.read_range(20, 35).unwrap();
+        assert_eq!(range.len(), 10);
+        assert_eq!(range[0].value, "v25");
+        assert_eq!(range[9].value, "v34");
+
+        let old = part.read_range(0, 20).unwrap();
+        assert!(old.is_empty());
+    }
+
+    // --- Segmented mode tests ---
+
+    #[test]
+    fn segment_rolling_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        // Create partition with max 5 records per segment
+        let mut part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(5),
+        ).unwrap();
+
+        // Write 12 records - should create 3 segments (5 + 5 + 2)
+        for i in 0..12 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        assert_eq!(part.next_offset(), 12);
+        assert_eq!(part.segment_count(), 3);
+
+        // Verify all records are readable
+        for i in 0..12 {
+            let record = part.read(i).unwrap().unwrap();
+            assert_eq!(record.value, format!("v{}", i));
+        }
+    }
+
+    #[test]
+    fn read_across_segment_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        let mut part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(5),
+        ).unwrap();
+
+        // Write 10 records across 2 segments
+        for i in 0..10 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        // Read range that spans segment boundary
+        let range = part.read_range(3, 8).unwrap();
+        assert_eq!(range.len(), 5);
+        assert_eq!(range[0].value, "v3");
+        assert_eq!(range[4].value, "v7");
+    }
+
+    #[test]
+    fn segmented_persistence_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        {
+            let mut part = Partition::open_with_config(
+                0,
+                &part_dir,
+                Compression::None,
+                Some(5),
+            ).unwrap();
+
+            for i in 0..12 {
+                let mut rec = make_record("t", &format!("v{}", i));
+                part.append(&mut rec).unwrap();
+            }
+        }
+
+        // Reopen
+        let mut part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(5),
+        ).unwrap();
+
+        assert_eq!(part.next_offset(), 12);
+        assert_eq!(part.segment_count(), 3);
+
+        // Verify all records
+        for i in 0..12 {
+            let record = part.read(i).unwrap().unwrap();
+            assert_eq!(record.value, format!("v{}", i));
+        }
+
+        // Can continue appending
+        let mut rec = make_record("t", "v12");
+        let offset = part.append(&mut rec).unwrap();
+        assert_eq!(offset, 12);
+    }
+
+    #[test]
+    fn compaction_removes_old_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        let mut part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(5),
+        ).unwrap();
+
+        // Write 15 records (3 segments)
+        for i in 0..15 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        assert_eq!(part.segment_count(), 3);
+
+        // Advance retention past first segment
+        part.advance_retention(6).unwrap();
+
+        // Compact should remove the first segment
+        let removed = part.compact().unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(part.segment_count(), 2);
+
+        // Old records should return None
+        for i in 0..6 {
+            assert!(part.read(i).unwrap().is_none());
+        }
+
+        // Newer records should still work
+        for i in 6..15 {
+            let record = part.read(i).unwrap().unwrap();
+            assert_eq!(record.value, format!("v{}", i));
+        }
+    }
+
+    #[test]
+    fn cold_start_many_segments_loads_metadata_only() {
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        // Create partition with many segments
+        {
+            let mut part = Partition::open_with_config(
+                0,
+                &part_dir,
+                Compression::None,
+                Some(10), // 10 records per segment
+            ).unwrap();
+
+            // Write 100 records (10 segments)
+            for i in 0..100 {
+                let mut rec = make_record("t", &format!("v{}", i));
+                part.append(&mut rec).unwrap();
+            }
+        }
+
+        // Measure cold start time
+        let start = Instant::now();
+        let part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(10),
+        ).unwrap();
+        let _cold_start_duration = start.elapsed();
+
+        // Should have loaded all segments
+        assert_eq!(part.segment_count(), 10);
+        assert_eq!(part.next_offset(), 100);
+
+        // All records should still be readable
+        for i in 0..100 {
+            let record = part.read(i).unwrap().unwrap();
+            assert_eq!(record.value, format!("v{}", i));
+        }
+    }
+
+    #[test]
+    fn compaction_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        let mut part = Partition::open_with_config(
+            0,
+            &part_dir,
+            Compression::None,
+            Some(5),
+        ).unwrap();
+
+        // Write 15 records (3 segments)
+        for i in 0..15 {
+            let mut rec = make_record("t", &format!("v{}", i));
+            part.append(&mut rec).unwrap();
+        }
+
+        part.advance_retention(6).unwrap();
+
+        // First compaction
+        let removed1 = part.compact().unwrap();
+        assert_eq!(removed1, 1);
+        assert_eq!(part.segment_count(), 2);
+
+        // Second compaction should be a no-op
+        let removed2 = part.compact().unwrap();
+        assert_eq!(removed2, 0);
+        assert_eq!(part.segment_count(), 2);
+
+        // Third compaction should also be a no-op
+        let removed3 = part.compact().unwrap();
+        assert_eq!(removed3, 0);
+        assert_eq!(part.segment_count(), 2);
     }
 }

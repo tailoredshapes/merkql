@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 /// Header size per pack entry: 4 bytes (data_length) + 32 bytes (hash).
 const ENTRY_HEADER_SIZE: u64 = 36;
@@ -19,8 +19,8 @@ const IDX_HEADER_SIZE: usize = 8;
 /// CRC32 checksum size in bytes.
 const CRC_SIZE: usize = 4;
 
-struct PackInner {
-    index: HashMap<Hash, (u64, u32)>, // hash → (data_offset, data_length)
+/// Write-only state protected by a mutex.
+struct WriteState {
     file: File,
     write_pos: u64,
 }
@@ -32,9 +32,14 @@ struct PackInner {
 ///
 /// Objects are hashed BEFORE compression so merkle proofs remain valid
 /// regardless of compression setting.
+///
+/// Uses RwLock for the index (read-heavy) and Mutex for writes, allowing
+/// concurrent reads without blocking.
 pub struct ObjectStore {
-    inner: Mutex<PackInner>,
+    index: RwLock<HashMap<Hash, (u64, u32)>>, // hash → (data_offset, data_length)
+    writer: Mutex<WriteState>,
     compression: Compression,
+    pack_path: PathBuf,
     idx_path: PathBuf,
 }
 
@@ -58,6 +63,7 @@ impl ObjectStore {
 
         let mut file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&pack_path)
@@ -92,12 +98,10 @@ impl ObjectStore {
         }
 
         Ok(ObjectStore {
-            inner: Mutex::new(PackInner {
-                index,
-                file,
-                write_pos,
-            }),
+            index: RwLock::new(index),
+            writer: Mutex::new(WriteState { file, write_pos }),
             compression,
+            pack_path,
             idx_path,
         })
     }
@@ -109,72 +113,130 @@ impl ObjectStore {
         let hash = Hash::digest(data);
         let compressed = self.compression.compress(data);
 
-        let mut inner = self.inner.lock().unwrap();
-        if inner.index.contains_key(&hash) {
-            return Ok(hash);
+        // First check with read lock (fast path for existing objects)
+        {
+            let index = self.index.read().unwrap();
+            if index.contains_key(&hash) {
+                return Ok(hash);
+            }
+        }
+
+        // Need to write - acquire writer lock
+        let mut writer = self.writer.lock().unwrap();
+
+        // Double-check after acquiring write lock (another thread may have written)
+        {
+            let index = self.index.read().unwrap();
+            if index.contains_key(&hash) {
+                return Ok(hash);
+            }
         }
 
         let data_len = compressed.len() as u32;
-        let pos = inner.write_pos;
+        let pos = writer.write_pos;
 
-        inner
+        writer
             .file
             .seek(SeekFrom::Start(pos))
             .context("seeking to write position")?;
-        inner
+        writer
             .file
             .write_all(&data_len.to_le_bytes())
             .context("writing data length")?;
-        inner.file.write_all(&hash.0).context("writing hash")?;
-        inner
+        writer.file.write_all(&hash.0).context("writing hash")?;
+        writer
             .file
             .write_all(&compressed)
             .context("writing compressed data")?;
 
         let data_offset = pos + ENTRY_HEADER_SIZE;
-        inner.index.insert(hash, (data_offset, data_len));
-        inner.write_pos = data_offset + data_len as u64;
+        writer.write_pos = data_offset + data_len as u64;
+
+        // Update index with write lock
+        {
+            let mut index = self.index.write().unwrap();
+            index.insert(hash, (data_offset, data_len));
+        }
 
         Ok(hash)
     }
 
     /// Retrieve bytes by hash. Returns decompressed data.
+    /// Uses a fresh file handle to avoid blocking other readers/writers.
     pub fn get(&self, hash: &Hash) -> Result<Vec<u8>> {
         let (data_offset, data_len) = {
-            let inner = self.inner.lock().unwrap();
-            *inner
-                .index
+            let index = self.index.read().unwrap();
+            *index
                 .get(hash)
                 .with_context(|| format!("object not found: {}", hash))?
         };
 
+        // Open a fresh file handle for reading (doesn't block other readers/writers)
+        let mut file = File::open(&self.pack_path)
+            .with_context(|| format!("opening pack file for read: {}", hash))?;
+
         let mut buf = vec![0u8; data_len as usize];
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner
-                .file
-                .seek(SeekFrom::Start(data_offset))
-                .with_context(|| format!("seeking to object {}", hash))?;
-            inner
-                .file
-                .read_exact(&mut buf)
-                .with_context(|| format!("reading object {}", hash))?;
-        }
+        file.seek(SeekFrom::Start(data_offset))
+            .with_context(|| format!("seeking to object {}", hash))?;
+        file.read_exact(&mut buf)
+            .with_context(|| format!("reading object {}", hash))?;
 
         Compression::decompress(&buf).with_context(|| format!("decompressing object {}", hash))
     }
 
+    /// Retrieve multiple objects by hash in a single operation.
+    /// Opens the pack file once and reads all requested objects.
+    /// Returns a vector of (hash, data) pairs in the same order as input.
+    /// Missing hashes are skipped (not included in output).
+    pub fn get_batch(&self, hashes: &[Hash]) -> Result<Vec<(Hash, Vec<u8>)>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect all offsets under a single read lock
+        let locations: Vec<(Hash, u64, u32)> = {
+            let index = self.index.read().unwrap();
+            hashes
+                .iter()
+                .filter_map(|h| index.get(h).map(|&(off, len)| (*h, off, len)))
+                .collect()
+        };
+
+        if locations.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Open a single file handle for all reads
+        let mut file = File::open(&self.pack_path).context("opening pack file for batch read")?;
+
+        let mut results = Vec::with_capacity(locations.len());
+        for (hash, data_offset, data_len) in locations {
+            let mut buf = vec![0u8; data_len as usize];
+            file.seek(SeekFrom::Start(data_offset))
+                .with_context(|| format!("seeking to object {}", hash))?;
+            file.read_exact(&mut buf)
+                .with_context(|| format!("reading object {}", hash))?;
+
+            let decompressed = Compression::decompress(&buf)
+                .with_context(|| format!("decompressing object {}", hash))?;
+            results.push((hash, decompressed));
+        }
+
+        Ok(results)
+    }
+
     /// Check if an object exists.
     pub fn exists(&self, hash: &Hash) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.index.contains_key(hash)
+        let index = self.index.read().unwrap();
+        index.contains_key(hash)
     }
 
     /// Flush the pack file and persist the index to disk.
     pub fn flush(&self) -> Result<()> {
-        let inner = self.inner.lock().unwrap();
-        inner.file.sync_all().context("syncing pack file")?;
-        Self::save_index(&self.idx_path, &inner.index, inner.write_pos)?;
+        let writer = self.writer.lock().unwrap();
+        let index = self.index.read().unwrap();
+        writer.file.sync_all().context("syncing pack file")?;
+        Self::save_index(&self.idx_path, &index, writer.write_pos)?;
         Ok(())
     }
 
@@ -249,6 +311,7 @@ impl ObjectStore {
     /// Load the persisted index file with CRC32 validation.
     /// Returns None if the file doesn't exist, CRC mismatch, is too small,
     /// or if pack_size doesn't match the actual pack file length.
+    #[allow(clippy::type_complexity)]
     fn load_index(
         idx_path: &Path,
         pack_len: u64,
@@ -330,10 +393,10 @@ impl ObjectStore {
         fs::rename(&tmp, idx_path).context("renaming index file")?;
 
         // fsync parent directory (NFS safety)
-        if let Some(parent) = idx_path.parent() {
-            if let Ok(dir) = fs::File::open(parent) {
-                let _ = dir.sync_all();
-            }
+        if let Some(parent) = idx_path.parent()
+            && let Ok(dir) = fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
         }
 
         Ok(())
@@ -412,6 +475,8 @@ impl ObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
 
     fn open_store(dir: &Path, compression: Compression) -> ObjectStore {
         let pack_path = dir.join("objects.pack");
@@ -594,5 +659,197 @@ mod tests {
         assert!(store.exists(&hash));
         let retrieved = store.get(&hash).unwrap();
         assert_eq!(retrieved, b"important data");
+    }
+
+    #[test]
+    fn get_batch_returns_all_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(dir.path(), Compression::None);
+
+        let data1 = b"batch item 1";
+        let data2 = b"batch item 2";
+        let data3 = b"batch item 3";
+
+        let h1 = store.put(data1).unwrap();
+        let h2 = store.put(data2).unwrap();
+        let h3 = store.put(data3).unwrap();
+
+        let results = store.get_batch(&[h1, h2, h3]).unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Results should be in order
+        assert_eq!(results[0].0, h1);
+        assert_eq!(results[0].1, data1.to_vec());
+        assert_eq!(results[1].0, h2);
+        assert_eq!(results[1].1, data2.to_vec());
+        assert_eq!(results[2].0, h3);
+        assert_eq!(results[2].1, data3.to_vec());
+    }
+
+    #[test]
+    fn get_batch_skips_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(dir.path(), Compression::None);
+
+        let h1 = store.put(b"exists").unwrap();
+        let missing = Hash::digest(b"not stored");
+
+        let results = store.get_batch(&[h1, missing]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, h1);
+    }
+
+    #[test]
+    fn get_batch_empty_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(dir.path(), Compression::None);
+
+        let results = store.get_batch(&[]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn concurrent_reads_same_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(open_store(dir.path(), Compression::None));
+
+        let data = b"shared data for concurrent reads";
+        let hash = store.put(data).unwrap();
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let hash = hash;
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        let retrieved = store.get(&hash).unwrap();
+                        assert_eq!(retrieved, b"shared data for concurrent reads");
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_reads_different_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(open_store(dir.path(), Compression::None));
+
+        // Store multiple objects
+        let mut hashes = Vec::new();
+        for i in 0..10 {
+            let data = format!("object-{}", i);
+            let hash = store.put(data.as_bytes()).unwrap();
+            hashes.push((hash, data));
+        }
+
+        let hashes = Arc::new(hashes);
+
+        let handles: Vec<_> = (0..4)
+            .map(|thread_id| {
+                let store = Arc::clone(&store);
+                let hashes = Arc::clone(&hashes);
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        let idx = (thread_id * 17) % hashes.len();
+                        let (hash, expected) = &hashes[idx];
+                        let retrieved = store.get(hash).unwrap();
+                        assert_eq!(retrieved, expected.as_bytes());
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_read_during_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(open_store(dir.path(), Compression::None));
+
+        // Store initial object
+        let initial_data = b"initial object";
+        let initial_hash = store.put(initial_data).unwrap();
+
+        let reader_store = Arc::clone(&store);
+        let writer_store = Arc::clone(&store);
+
+        // Reader thread: continuously reads the initial object
+        let reader = thread::spawn(move || {
+            for _ in 0..500 {
+                let retrieved = reader_store.get(&initial_hash).unwrap();
+                assert_eq!(retrieved, b"initial object");
+            }
+        });
+
+        // Writer thread: continuously writes new objects
+        let writer = thread::spawn(move || {
+            for i in 0..100 {
+                let data = format!("new object {}", i);
+                writer_store.put(data.as_bytes()).unwrap();
+            }
+        });
+
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn reads_do_not_block_writers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(open_store(dir.path(), Compression::None));
+
+        // Store initial object
+        let initial_hash = store.put(b"test object").unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+
+        // Reader threads: continuously read
+        let reader_handles: Vec<_> = (0..4)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let done = Arc::clone(&done);
+                let hash = initial_hash;
+                thread::spawn(move || {
+                    while !done.load(Ordering::Relaxed) {
+                        let _ = store.get(&hash);
+                    }
+                })
+            })
+            .collect();
+
+        // Give readers time to start
+        thread::sleep(Duration::from_millis(10));
+
+        // Writer: should be able to write quickly even with readers
+        let start = Instant::now();
+        for i in 0..50 {
+            let data = format!("write during reads {}", i);
+            store.put(data.as_bytes()).unwrap();
+        }
+        let write_duration = start.elapsed();
+
+        done.store(true, Ordering::Relaxed);
+        for h in reader_handles {
+            h.join().unwrap();
+        }
+
+        // Writes should complete in reasonable time (< 1 second for 50 writes)
+        // This would timeout if readers were blocking writers
+        assert!(
+            write_duration < Duration::from_secs(1),
+            "Writes took too long: {:?}",
+            write_duration
+        );
     }
 }

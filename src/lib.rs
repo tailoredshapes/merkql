@@ -37,6 +37,7 @@ pub mod node;
 pub mod partition;
 pub mod producer;
 pub mod record;
+pub mod segment;
 pub mod store;
 pub mod topic;
 pub mod tree;
