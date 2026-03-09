@@ -9,7 +9,7 @@ keywords = ["kafka", "event-streaming", "aws", "sns", "notification"]
 categories = ["web-programming", "asynchronous"]
 
 [dependencies]
-merkql = { version = "0.1.1", path = "..", features = ["notify"] }
+merkql = { version = "0.2.0", path = "..", features = ["notify"] }
 aws-sdk-sns = "1"
 aws-config = "1"
 serde = { version = "1", features = ["derive"] }

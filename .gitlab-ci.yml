@@ -1,0 +1,32 @@
+stages:
+  - test
+  - publish
+
+variables:
+  CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .cargo/registry/
+    - .cargo/git/
+    - target/
+
+test:
+  stage: test
+  script:
+    - cargo test --release
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_MERGE_REQUEST_ID
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
+
+publish:
+  stage: publish
+  script:
+    - echo "Publishing ${CI_COMMIT_TAG} to crates.io..."
+    - cargo publish --token "$CARGO_REGISTRY_TOKEN"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
+  needs:
+    - test
