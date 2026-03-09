@@ -63,7 +63,7 @@ impl ObjectStore {
 
         let mut file = OpenOptions::new()
             .create(true)
-            .truncate(false)
+            .truncate(false) // Explicit: create(true)+write(true) defaults to truncate
             .read(true)
             .write(true)
             .open(&pack_path)
@@ -109,6 +109,9 @@ impl ObjectStore {
     /// Store bytes, returning their content hash. Idempotent — if the object
     /// already exists, this is a no-op.
     /// Hash is computed on uncompressed data; storage uses compressed form.
+    ///
+    /// Lock ordering: index(read) → writer(exclusive) → index(read) → index(write).
+    /// Readers only ever take index(read), so no deadlock is possible.
     pub fn put(&self, data: &[u8]) -> Result<Hash> {
         let hash = Hash::digest(data);
         let compressed = self.compression.compress(data);
@@ -162,7 +165,8 @@ impl ObjectStore {
     }
 
     /// Retrieve bytes by hash. Returns decompressed data.
-    /// Uses a fresh file handle to avoid blocking other readers/writers.
+    /// Opens a fresh file handle per call to avoid blocking other readers/writers.
+    /// Under very high concurrent read load, prefer `get_batch()` to reduce fd usage.
     pub fn get(&self, hash: &Hash) -> Result<Vec<u8>> {
         let (data_offset, data_len) = {
             let index = self.index.read().unwrap();
@@ -393,10 +397,10 @@ impl ObjectStore {
         fs::rename(&tmp, idx_path).context("renaming index file")?;
 
         // fsync parent directory (NFS safety)
-        if let Some(parent) = idx_path.parent()
-            && let Ok(dir) = fs::File::open(parent)
-        {
-            let _ = dir.sync_all();
+        if let Some(parent) = idx_path.parent() {
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
         }
 
         Ok(())

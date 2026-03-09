@@ -1,56 +1,15 @@
+use crate::utils::{atomic_read, atomic_write};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-
-/// CRC32 checksum size in bytes.
-const CRC_SIZE: usize = 4;
+use std::path::PathBuf;
 
 /// Identifies a specific topic-partition pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TopicPartition {
     pub topic: String,
     pub partition: u32,
-}
-
-/// Atomically write checksummed data to a file using temp+fsync+rename+fsync-parent.
-/// Format: [4 bytes CRC32 of data][data...]
-fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let crc = crc32fast::hash(data);
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp).context("creating temp file for atomic write")?;
-    f.write_all(&crc.to_le_bytes())
-        .context("writing CRC32 checksum")?;
-    f.write_all(data).context("writing atomic data")?;
-    f.sync_all().context("syncing atomic write")?;
-    fs::rename(&tmp, path).context("renaming atomic write")?;
-
-    // fsync parent directory to ensure the directory entry is durable (NFS safety)
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
-    }
-
-    Ok(())
-}
-
-/// Read checksummed data written by `atomic_write`.
-/// Returns Ok(Some(data)) on success, Ok(None) if CRC mismatch.
-fn atomic_read(path: &Path) -> Result<Option<Vec<u8>>> {
-    let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    if raw.len() < CRC_SIZE {
-        return Ok(None);
-    }
-    let stored_crc = u32::from_le_bytes(raw[..CRC_SIZE].try_into().unwrap());
-    let data = &raw[CRC_SIZE..];
-    let computed_crc = crc32fast::hash(data);
-    if stored_crc != computed_crc {
-        return Ok(None);
-    }
-    Ok(Some(data.to_vec()))
 }
 
 /// Persists per-TopicPartition committed offsets for a consumer group.

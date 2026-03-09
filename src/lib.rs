@@ -41,6 +41,7 @@ pub mod segment;
 pub mod store;
 pub mod topic;
 pub mod tree;
+pub mod utils;
 
 #[cfg(feature = "notify")]
 pub mod notify;
