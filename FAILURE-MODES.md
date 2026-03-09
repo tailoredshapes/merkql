@@ -132,4 +132,40 @@ All lock-poisoning panics are cascading failures that indicate a prior logic bug
 
 Objects are stored in a single append-only pack file (`objects.pack`) with a persisted index (`objects.pack.idx`). This eliminates the small-file problem — all objects share a single file, with no per-object filesystem overhead.
 
-**Per-partition files**: `offsets.idx`, `objects.pack`, `objects.pack.idx`, `tree.snapshot`, `retention.bin`, `partition.lock` — 6 files regardless of record count.
+**Per-partition files (legacy mode)**: `offsets.idx`, `objects.pack`, `objects.pack.idx`, `tree.snapshot`, `retention.bin`, `partition.lock` — 6 files regardless of record count.
+
+**Per-partition files (segmented mode)**: `partition.lock`, `partition_meta.bin`, plus per-segment: `objects/objects.pack`, `objects/objects.pack.idx`, `offsets.idx`, `tree.snapshot`, `offset_range.bin` — 5 files per segment.
+
+## 12. Segment Rolling
+
+When a partition is configured with `max_segment_records`, segments are automatically sealed and new ones created.
+
+| Failure | Behavior | Data Loss | Recovery |
+|---|---|---|---|
+| **Crash during seal** | Active segment may not be marked sealed. On reopen, it continues as the active segment with correct offset count. | None | Automatic |
+| **Crash during new segment creation** | Segment directory may be partially created. On reopen, if the directory exists but has no valid metadata, it is treated as a new empty segment. | None | Automatic |
+| **Corrupt `offset_range.bin`** | CRC mismatch on segment metadata. Segment offsets recalculated from index file size. | None | Automatic |
+| **Corrupt `partition_meta.bin`** | Active segment ID lost. Reopen scans all segment directories to find the active (unsealed) segment. | None | Automatic |
+
+## 13. Compaction
+
+Compaction deletes entire sealed segment directories whose offset range falls below `min_valid_offset`.
+
+| Failure | Behavior | Data Loss | Recovery |
+|---|---|---|---|
+| **Crash during `remove_dir_all`** | Partially deleted segment directory. On reopen, the segment is either missing (deleted) or present (intact). Partial directories without valid metadata are ignored. | Compacted records (intentional) | Automatic |
+| **Read during compaction** | A reader may hold a file handle to a segment being compacted. On Unix, the file remains readable until the handle is closed (unlink semantics). No error. | None | Automatic |
+| **Read after compaction (no handle)** | Reader looks up offset in index, gets segment location, tries to open the file — fails with "file not found". Returns `Err`. | None | Caller retry or accept — record was below retention |
+| **Compact active segment** | Prevented in code — `compact()` only considers sealed segments. Active segment is never deleted. | N/A | N/A |
+
+## 14. Concurrent Reads (RwLock Model)
+
+The object store splits state into a `RwLock<HashMap>` (index) and a `Mutex<WriteState>` (writer).
+
+| Failure | Behavior | Data Loss | Recovery |
+|---|---|---|---|
+| **Reader panic while holding RwLock** | `RwLock` is poisoned. All subsequent reads/writes panic via `.unwrap()`. | None (on-disk data intact) | Process restart |
+| **Writer panic while holding Mutex** | `Mutex` is poisoned. All subsequent writes panic. Reads continue working (separate lock). | Current write lost | Process restart |
+| **File descriptor exhaustion** | `get()` opens a fresh file handle per call. Under extreme concurrent load, may hit `ulimit -n`. `get_batch()` uses a single handle. | None | Increase ulimit, use `get_batch()` |
+
+**Lock ordering**: `put()` acquires locks as: index(read) → writer(exclusive) → index(read) → index(write). Readers only take index(read). No deadlock is possible.

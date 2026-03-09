@@ -66,11 +66,19 @@ Every metadata write (tree snapshots, retention markers, consumer group offsets)
 ### Concurrency
 
 The broker uses fine-grained internal locking:
-- `RwLock` per partition — multiple readers, single writer, per-partition scope
+- `RwLock` on the object store index — concurrent reads, exclusive writes
+- Separate `Mutex` on the write state — readers never block on writes
+- Per-read file handles — each `get()` opens its own file handle, no shared seek position
 - `RwLock` on the topic map — topic lookups are read-only most of the time
 - `Mutex` per consumer group — groups are independent of each other
 
-A producer writing to partition 0 never blocks a consumer reading partition 1. Multiple consumers reading the same partition run concurrently.
+A producer writing to partition 0 never blocks a consumer reading partition 1. Multiple consumers reading the same partition run concurrently. Even reads and writes to the *same* partition run concurrently — only writers block other writers.
+
+### Segment rolling and compaction
+
+Partitions can be configured to roll into new segments after a fixed record count. Each segment is self-contained with its own pack file, index, and merkle tree. Sealed segments are read-only.
+
+Compaction deletes sealed segments whose offset range falls below the retention window. This is a clean operation — entire directories are removed, no per-record garbage collection. Reads are transparent across segments; cold start only scans the active segment.
 
 ### Merkle tree design
 
@@ -95,14 +103,18 @@ Sequential reads are fast because the offset index is a fixed-width array — of
 | Deployment | Library | Cluster | Library | Library |
 | Compression | LZ4 | Multiple | No | Manual |
 | Retention | Yes | Yes | Manual | Manual |
+| Segment rolling | Yes | Yes (time/size) | No | Manual |
+| Compaction | Yes (segment) | Yes (log) | Checkpoint | Manual |
+| Batch reads | `get_batch()` | Fetch API | N/A | Manual |
 | Crash safety | Atomic writes + fsync | Replicated log | WAL + checkpoints | Manual |
 | Distributed | No | Yes | No | No |
+| Notification plugins | Webhook, SNS, SQS | Kafka Connect | N/A | Manual |
 
 ## Getting started
 
 ```toml
 [dependencies]
-merkql = "0.1"
+merkql = "0.2"
 ```
 
 See [README.md](README.md) for API documentation and code examples.
