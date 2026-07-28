@@ -1,0 +1,10 @@
+# Without this, a `COPY . ` build context includes every build artifact in the
+# repo. For meshql-rs that is 83G of `target` plus 41G of agent worktrees on a
+# ~150G tree — copied once per consuming service, which does not fail so much as
+# never finish. eclectic builds seven services from this context.
+target/
+**/target/
+.worktrees/
+.git/
+node_modules/
+*.log
