@@ -61,10 +61,47 @@ implementations.
 
 ## Certifying an implementation
 
-1. Add its dependency under the matching `impl-*` feature in `Cargo.toml`.
-2. Point the `subject` alias at it in `src/lib.rs` and provide a
-   `fresh_site()` in `src/site.rs` (the only implementation-specific code).
-3. `cargo test -p merk-cert --no-default-features --features impl-aws`
+The suite is a macro, so it expands *inside* the crate under test and names
+that crate's real types. Add `merk-cert` and `chrono` as dev-dependencies, then
+write one test file:
+
+```rust
+pub struct Site { /* whatever the implementation needs */ }
+
+impl Site {
+    pub fn config(&self) -> my_impl::broker::BrokerConfig { /* ... */ }
+}
+
+/// Provision a fresh, empty, isolated location.
+pub fn fresh_site() -> Site { /* ... */ }
+
+merk_cert::merk_cert_suite!(my_impl, crate::fresh_site);
+```
+
+Provisioning is the only implementation-specific code. Everything else is
+fixed by the suite.
 
 Compilation failure = surface drift. Test failure = behavior drift. Green =
 certified.
+
+Implementations needing external infrastructure should put the invocation
+behind a feature with `required-features`, so `--no-run` still gives a surface
+check on every build while the behavioral run stays opt-in:
+
+```toml
+[features]
+live-cert = []
+
+[[test]]
+name = "cert"
+required-features = ["live-cert"]
+```
+
+## Certified implementations
+
+| Implementation | Storage | Surface | Behavior |
+|---|---|---|---|
+| `merkql` | local files | ✅ | ✅ 27/27 |
+| `merk-object` (`mem`) | in-process | ✅ | ✅ 27/27 |
+| `merk-aws` | S3 Express One Zone | ✅ | not yet run — needs a directory bucket |
+| `merk-azure` | Azure append blobs | ✅ | not yet run — needs storage or Azurite |
