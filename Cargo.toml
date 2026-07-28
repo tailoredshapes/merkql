@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "merk-cert",
     "merkql-notify-sns",
     "merkql-notify-sqs",
     "merkql-notify-webhook",

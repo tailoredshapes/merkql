@@ -1,0 +1,20 @@
+[package]
+name = "merk-cert"
+version = "0.1.0"
+edition = "2024"
+description = "Certification suite defining the merkql surface — an implementation that compiles against and passes this suite is a drop-in merkql"
+license = "MIT"
+repository = "https://github.com/tailoredshapes/merkql"
+
+[features]
+default = ["impl-local"]
+# Exactly one impl-* feature must be enabled. The suite compiles against
+# `merk_cert::subject::*`; selecting a feature selects which crate `subject` is.
+impl-local = ["dep:merkql", "dep:tempfile"]
+impl-aws = []
+impl-azure = []
+
+[dependencies]
+merkql = { path = "..", optional = true }
+tempfile = { version = "3", optional = true }
+chrono = "0.4"
