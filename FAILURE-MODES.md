@@ -76,15 +76,51 @@ merkql is NFS-safe (NFS v4.1 / EFS compatible) with the following hardening:
 
 ## 8. Concurrent Access from Multiple Processes
 
-Supported via `flock`-based writer exclusion:
+**NOT SUPPORTED. Multiple processes writing one partition silently lose data and
+can corrupt the object pack.**
 
-- **Partition writes**: `Partition::append` and `Partition::append_batch` acquire an exclusive `flock` on `partition.lock` in the partition directory before writing. The lock is released when the write completes.
-- **Consumer group commits**: `ConsumerGroup::persist` acquires an exclusive `flock` on `group.lock` before writing offsets.
-- **Readers**: Do NOT acquire locks. Append-only data is safe for concurrent reads. The index file (`offsets.idx`) is only appended to, so readers see a consistent prefix.
+Reproduce with `cargo run --release --example multi_process_writers -- <dir> <writers> <each>`.
+Measured 2026-07-29 at 50 records per writer:
 
-**Model**: Single writer (serialized by flock), concurrent readers. A single writer can saturate EFS throughput (~200-1000 writes/sec at 1-5ms per fsync). The flock provides correctness, not performance — multi-writer adds complexity for zero throughput gain.
+| Writers | Result |
+|---|---|
+| 2 | Half the records unreadable |
+| 4 | Object pack corrupt — `unknown compression marker` |
+| 8 | 396 of 400 records gone |
 
-**Note**: In the typical deployment (single Lambda / single process), the flock is a safety net rather than a contention point. The `RwLock` on partitions in `Topic` already serializes in-process writes.
+`Partition::append` and `append_batch` do take an exclusive `flock` on
+`partition.lock`, and that is genuine mutual exclusion. It is not sufficient,
+because the state the lock protects is **in memory, not on disk**, and is never
+re-read inside the lock:
+
+- `self.next_offset` — two writers assign the same offset to different records.
+- The object store's `write_pos` — two writers seek to the same byte position and
+  overwrite each other, which is where the pack corruption comes from.
+- The merkle tree and `tree.snapshot` — last writer wins, so the root describes
+  only one process's records.
+- The buffered index writer — entries interleave and overwrite.
+
+A lock only serializes writers if each one re-derives its position from durable
+state after acquiring it. merkql does not, so `flock` prevents writes from
+overlapping *in time* while doing nothing about them overlapping *in the file*.
+
+**Supported model: one writing process, many reading processes.** Readers take no
+locks and are safe: data is append-only and readers see a consistent prefix.
+In-process concurrency is also safe — `Topic` holds each partition behind an
+`RwLock` and `append` takes `&mut self`, so threads serialize correctly.
+
+If you need multiple writing processes, you need a store that can arbitrate the
+tail. That is what the object-storage backends do, using a compare-and-swap
+append: the loser is told its offset is stale, re-reads the tail, renumbers and
+retries. See the `merk-cloud` repo.
+
+**Fixing this in merkql** would mean re-deriving `next_offset`, `write_pos` and
+the tree from disk inside the lock on every append. Correct, but it trades the
+~45 µs append for several file operations — a real cost paid by the
+single-writer deployment that is the common case. A cheaper design is to detect
+staleness rather than always reload: one `seek(End)` on the index under the lock
+reveals whether anyone else has written, so the fast path stays fast and only a
+contended append pays to reload. Neither is implemented.
 
 ## 9. Orphaned .tmp Files
 

@@ -136,6 +136,13 @@ The object store uses `RwLock` for the index and a separate `Mutex` for writes. 
 - Readers never block writers
 - Writers only block other writers (briefly, during append)
 
+**One writing process only.** Threads within a process are safe. Multiple
+*processes* writing the same partition lose data and can corrupt the object pack,
+because each caches its write position in memory and the `flock` does not make
+them re-read it — see FAILURE-MODES.md §8, with a reproducer in
+`examples/multi_process_writers.rs`. For multi-writer, use a backend whose store
+arbitrates the tail (see the `merk-cloud` repo).
+
 For bulk reads, `get_batch()` opens a single file handle and reads all requested objects in sequence — fewer file descriptors, better throughput.
 
 ## Verify integrity
