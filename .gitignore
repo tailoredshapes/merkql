@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+
+# Agent worktrees are scratch checkouts, never part of the repo
+.claude/worktrees/
