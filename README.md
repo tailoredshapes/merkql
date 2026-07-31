@@ -136,12 +136,16 @@ The object store uses `RwLock` for the index and a separate `Mutex` for writes. 
 - Readers never block writers
 - Writers only block other writers (briefly, during append)
 
-**One writing process only.** Threads within a process are safe. Multiple
-*processes* writing the same partition lose data and can corrupt the object pack,
-because each caches its write position in memory and the `flock` does not make
-them re-read it — see FAILURE-MODES.md §8, with a reproducer in
-`examples/multi_process_writers.rs`. For multi-writer, use a backend whose store
-arbitrates the tail (see the `merk-cloud` repo).
+**One writing process, many readers.** Threads within a process are safe, and
+a second *process* that tries to write is refused with an error explaining why
+and what to use instead — never silently, and never by corrupting the log.
+merkql is single-writer by design: it cannot re-derive a cached write position
+under a lock without becoming a different thing. See FAILURE-MODES.md §8, with a
+reproducer in `examples/multi_process_writers.rs`.
+
+For multiple writing processes, use a backend whose store arbitrates the tail —
+`merk-aws`, `merk-azure` or `merkpgql`. They pass the same certification suite,
+so switching is a dependency rename and a recompile.
 
 For bulk reads, `get_batch()` opens a single file handle and reads all requested objects in sequence — fewer file descriptors, better throughput.
 

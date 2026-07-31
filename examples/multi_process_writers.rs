@@ -1,21 +1,26 @@
-//! Reproducer: multiple **processes** writing one merkql partition lose data.
+//! Demonstrates that merkql refuses a second writing process rather than
+//! corrupting the log.
 //!
 //! `cargo run --release --example multi_process_writers -- <dir> <writers> <each>`
 //!
-//! Observed on 2026-07-29 (2/4/8 writers, 50 records each):
-//!   2 writers -> half the records unreadable
-//!   4 writers -> the object pack is corrupt ("unknown compression marker")
-//!   8 writers -> 396 of 400 records gone
+//! Expect one writer to succeed and the rest to fail with a clear message. The
+//! records written by the winner are all present; nothing is silently lost.
 //!
-//! Why: `flock` serializes the critical section, but every process caches
-//! `next_offset`, the object store's `write_pos`, the merkle tree and the index
-//! writer in memory, and never re-reads them inside the lock. So two writers
-//! assign the same offset and write at the same byte position, each overwriting
-//! the other. Mutual exclusion is not enough when the state being protected
-//! lives in memory rather than on disk.
+//! It was not always so. Before the writer claim existed, this same program
+//! measured (2/4/8 writers, 50 records each): two writers lost half the
+//! records, four corrupted the object pack outright, and eight lost 396 of 400
+//! — all silently, with every process reporting success.
 //!
-//! In-process concurrency is fine — `Topic` holds each partition behind an
-//! `RwLock` and `append` takes `&mut self`.
+//! The cause is worth remembering: `flock` serialized the critical section, but
+//! every process cached `next_offset`, the object store's `write_pos`, the
+//! merkle tree and the index writer in memory and never re-read them inside the
+//! lock. Mutual exclusion is not enough when the state being protected lives in
+//! memory rather than on disk. merkql now claims the lock for the writer's
+//! lifetime and refuses anyone else.
+//!
+//! Concurrent *readers* are unaffected, and in-process concurrency is fine —
+//! `Topic` holds each partition behind an `RwLock` and `append` takes
+//! `&mut self`.
 use merkql::broker::{Broker, BrokerConfig};
 use merkql::consumer::{ConsumerConfig, OffsetReset};
 use merkql::record::ProducerRecord;
@@ -28,9 +33,18 @@ fn write(dir: &str, tag: &str, count: usize) -> anyhow::Result<()> {
     let broker = Broker::open(BrokerConfig::new(dir))?;
     broker.ensure_topic(TOPIC)?;
     let producer = Broker::producer(&broker);
+    let mut wrote = 0usize;
     for i in 0..count {
-        producer.send(&ProducerRecord::new(TOPIC, None, format!("{tag}-{i}")))?;
+        match producer.send(&ProducerRecord::new(TOPIC, None, format!("{tag}-{i}"))) {
+            Ok(_) => wrote += 1,
+            Err(e) => {
+                eprintln!("[{tag}] refused after {wrote} records: {}", 
+                    e.to_string().lines().next().unwrap_or(""));
+                return Err(e);
+            }
+        }
     }
+    eprintln!("[{tag}] wrote {wrote}");
     Ok(())
 }
 
@@ -38,6 +52,15 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("write") {
         return write(&args[2], &args[3], args[4].parse()?);
+    }
+    // Open only: never appends. Isolates whether merely opening a partition
+    // while another process writes is enough to damage the log.
+    if args.get(1).map(|s| s.as_str()) == Some("open") {
+        for _ in 0..20 {
+            let _broker = Broker::open(BrokerConfig::new(args[2].as_str()))?;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        return Ok(());
     }
 
     let dir = &args[1];
@@ -90,27 +113,42 @@ fn main() -> anyhow::Result<()> {
     let dup_offsets: Vec<_> = by_offset.iter().filter(|(_, v)| v.len() > 1).collect();
     let missing: Vec<_> = expected.difference(&found).cloned().collect();
 
-    println!("writers={writers} each={each}  child failures={failed}");
-    println!("expected {} distinct records", expected.len());
+    let refused = failed;
+    let accepted = writers - refused;
+    let expected_from_accepted = accepted * each;
+
+    println!("writers={writers} each={each}");
+    println!("  {accepted} accepted, {refused} refused");
     println!(
-        "readable {} records, {} distinct values",
+        "  readable {} records, {} distinct",
         records.len(),
         found.len()
     );
-    println!("offsets with >1 record: {}", dup_offsets.len());
-    println!("LOST records: {}", missing.len());
-    if !missing.is_empty() {
-        let mut sample: Vec<_> = missing.iter().take(5).collect();
-        sample.sort();
-        println!("  e.g. {sample:?}");
-    }
+    println!("  offsets holding more than one record: {}", dup_offsets.len());
+    println!("  expected from accepted writers: {expected_from_accepted}");
+
+    // Records belonging to a refused writer were never written — that is the
+    // point. What must not happen is losing a record an accepted writer wrote,
+    // or two records sharing an offset.
+    let duplicated = !dup_offsets.is_empty() || records.len() != found.len();
+    let lost = records.len() < expected_from_accepted;
+
     println!(
         "VERDICT: {}",
-        if missing.is_empty() && dup_offsets.is_empty() {
-            "no loss"
-        } else {
+        if duplicated {
+            "CORRUPTION"
+        } else if lost {
             "DATA LOSS"
+        } else if refused > 0 {
+            "refused loudly, nothing lost"
+        } else {
+            "single writer, nothing lost"
         }
     );
+    if lost {
+        let mut sample: Vec<_> = missing.iter().take(5).collect();
+        sample.sort();
+        println!("  missing from an accepted writer, e.g. {sample:?}");
+    }
     Ok(())
 }

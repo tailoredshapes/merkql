@@ -76,11 +76,52 @@ merkql is NFS-safe (NFS v4.1 / EFS compatible) with the following hardening:
 
 ## 8. Concurrent Access from Multiple Processes
 
-**NOT SUPPORTED. Multiple processes writing one partition silently lose data and
-can corrupt the object pack.**
+**One writing process, many reading processes.** A second writer is refused
+with an explanatory error rather than allowed to corrupt the log.
 
-Reproduce with `cargo run --release --example multi_process_writers -- <dir> <writers> <each>`.
-Measured 2026-07-29 at 50 records per writer:
+```
+another process is already writing partition 0 at /data/topics/t/partitions/0
+
+merkql is single-writer by design. It serializes writers with flock, but each
+process caches its own write position in memory and never re-reads it under the
+lock — so a second writer would assign offsets that are already taken and
+overwrite records that are already there. Refusing is the only safe answer.
+
+Concurrent readers are fine and always were.
+
+For multiple writing processes, use a backend whose store arbitrates the tail:
+  merk-aws    — S3 Express One Zone, compare-and-swap appends
+  merk-azure  — Azure append blobs, same
+  merkpgql    — PostgreSQL, writers queue on a row lock
+```
+
+Verify with `cargo run --release --example multi_process_writers -- <dir> <writers> <each>`.
+At 2, 8 and 16 concurrent writers: one is accepted, the rest are refused, and
+every record the accepted writer wrote is present.
+
+### How it works
+
+- **The writer claim** is an exclusive `flock` on `partition.lock`, taken on the
+  first append and held for the partition's lifetime. It is deliberately
+  *non-blocking*: waiting would let a second writer proceed the moment the first
+  paused between appends, and by then the waiter's cached offsets and write
+  positions are stale. Refusing outright is the only correct answer.
+- **Readers are never excluded**, because the claim is taken on first append
+  rather than at open. Data is append-only and readers see a consistent prefix.
+- **Crash recovery is gated on owning the tail.** Opening a partition truncates
+  partial writes, which is right after a crash and wrong during someone else's
+  append — a partial entry from a live writer is not garbage, it is a record in
+  flight. Open now probes the lock first and only repairs when nobody else holds
+  it.
+
+### What this used to do
+
+Before the claim existed, `flock` was taken and released around each append.
+That is genuine mutual exclusion and it was not enough, because the state it
+protected lived in memory rather than on disk: `next_offset`, the object store's
+`write_pos`, the merkle tree and the buffered index writer were all cached
+per-process and never re-read inside the lock. Measured with real processes, 50
+records each:
 
 | Writers | Result |
 |---|---|
@@ -88,39 +129,15 @@ Measured 2026-07-29 at 50 records per writer:
 | 4 | Object pack corrupt — `unknown compression marker` |
 | 8 | 396 of 400 records gone |
 
-`Partition::append` and `append_batch` do take an exclusive `flock` on
-`partition.lock`, and that is genuine mutual exclusion. It is not sufficient,
-because the state the lock protects is **in memory, not on disk**, and is never
-re-read inside the lock:
+Silently, with every process reporting success. A lock only serializes writers
+if each re-derives its position from durable state after acquiring it.
 
-- `self.next_offset` — two writers assign the same offset to different records.
-- The object store's `write_pos` — two writers seek to the same byte position and
-  overwrite each other, which is where the pack corruption comes from.
-- The merkle tree and `tree.snapshot` — last writer wins, so the root describes
-  only one process's records.
-- The buffered index writer — entries interleave and overwrite.
+### If you need multiple writers
 
-A lock only serializes writers if each one re-derives its position from durable
-state after acquiring it. merkql does not, so `flock` prevents writes from
-overlapping *in time* while doing nothing about them overlapping *in the file*.
-
-**Supported model: one writing process, many reading processes.** Readers take no
-locks and are safe: data is append-only and readers see a consistent prefix.
-In-process concurrency is also safe — `Topic` holds each partition behind an
-`RwLock` and `append` takes `&mut self`, so threads serialize correctly.
-
-If you need multiple writing processes, you need a store that can arbitrate the
-tail. That is what the object-storage backends do, using a compare-and-swap
-append: the loser is told its offset is stale, re-reads the tail, renumbers and
-retries. See the `merk-cloud` repo.
-
-**Fixing this in merkql** would mean re-deriving `next_offset`, `write_pos` and
-the tree from disk inside the lock on every append. Correct, but it trades the
-~45 µs append for several file operations — a real cost paid by the
-single-writer deployment that is the common case. A cheaper design is to detect
-staleness rather than always reload: one `seek(End)` on the index under the lock
-reveals whether anyone else has written, so the fast path stays fast and only a
-contended append pays to reload. Neither is implemented.
+That is not a gap to be filled here — it is a different design. A store that
+arbitrates the tail can do it: object storage with compare-and-swap appends, or
+a database with row locks. See merk-aws, merk-azure and merkpgql, which pass the
+same certification suite and are drop-in replacements.
 
 ## 9. Orphaned .tmp Files
 

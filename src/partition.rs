@@ -27,6 +27,25 @@ struct PartitionMeta {
     segmented: bool,
 }
 
+/// The message a second writer gets. It is the only documentation most people
+/// will read at the moment it matters, so it says what is wrong, why, and what
+/// to use instead.
+fn second_writer_error(id: u32, dir: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "another process is already writing partition {id} at {}\n\n\
+         merkql is single-writer by design. It serializes writers with flock, but each \
+         process caches its own write position in memory and never re-reads it under the \
+         lock — so a second writer would assign offsets that are already taken and \
+         overwrite records that are already there. Refusing is the only safe answer.\n\n\
+         Concurrent readers are fine and always were.\n\n\
+         For multiple writing processes, use a backend whose store arbitrates the tail:\n\
+         \x20 merk-aws    — S3 Express One Zone, compare-and-swap appends\n\
+         \x20 merk-azure  — Azure append blobs, same\n\
+         \x20 merkpgql    — PostgreSQL, writers queue on a row lock",
+        dir.display()
+    )
+}
+
 /// Acquire an exclusive flock on a lock file in the given directory.
 /// Returns the lock file handle (lock released on drop).
 fn acquire_partition_lock(dir: &Path) -> Result<fs::File> {
@@ -58,6 +77,9 @@ enum PartitionStorage {
 
 /// A single append-only partition backed by a merkle tree.
 pub struct Partition {
+    /// Held for as long as this partition may write. Claimed on the first
+    /// append rather than at open, so opening to read never excludes anyone.
+    writer_lock: Option<fs::File>,
     id: u32,
     dir: PathBuf,
     storage: PartitionStorage,
@@ -117,6 +139,26 @@ impl Partition {
         let objects_dir = dir.join("objects");
         let store = ObjectStore::open(pack_path, objects_dir, compression)?;
 
+        // Crash recovery below truncates partial writes. That is right after a
+        // crash and wrong during someone else's append: a "partial entry" from
+        // a live writer is not garbage, it is a record in flight, and removing
+        // it destroys it. So repair only when nobody else owns the tail.
+        //
+        // The probe is released before returning, so a reader opening first
+        // does not lock out the writer.
+        let repair = {
+            let lock_path = dir.join("partition.lock");
+            match fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock_path)
+            {
+                Ok(f) => fs2::FileExt::try_lock_exclusive(&f).is_ok(),
+                Err(_) => false,
+            }
+        };
+
         // Restore tree snapshot if it exists, with CRC validation
         let snapshot_path = dir.join("tree.snapshot");
         let tree = if snapshot_path.exists() {
@@ -146,7 +188,7 @@ impl Partition {
 
             // Truncate any trailing partial entry
             let valid_len = (len / INDEX_ENTRY_SIZE as u64) * INDEX_ENTRY_SIZE as u64;
-            if valid_len < len {
+            if repair && valid_len < len {
                 f.set_len(valid_len)
                     .context("truncating partial index entry")?;
                 f.sync_all().context("syncing after index truncation")?;
@@ -190,7 +232,7 @@ impl Partition {
 
             // Truncate index to validated length
             let validated_len = entry_count * INDEX_ENTRY_SIZE as u64;
-            if validated_len < valid_len {
+            if repair && validated_len < valid_len {
                 f.set_len(validated_len)
                     .context("truncating invalid tail entries")?;
                 f.sync_all()
@@ -223,6 +265,7 @@ impl Partition {
         let index_writer = BufWriter::new(index_file);
 
         Ok(Partition {
+            writer_lock: None,
             id,
             dir,
             storage: PartitionStorage::Legacy {
@@ -316,6 +359,7 @@ impl Partition {
         atomic_write(&dir.join("partition.meta"), &meta_data)?;
 
         Ok(Partition {
+            writer_lock: None,
             id,
             dir,
             storage: PartitionStorage::Segmented {
@@ -344,8 +388,35 @@ impl Partition {
     /// Append a record to the partition, assigning the next sequential offset.
     /// Returns the assigned offset.
     /// Acquires an exclusive flock for writer exclusion (NFS-safe).
+    /// Claim exclusive write access, or fail loudly.
+    ///
+    /// Deliberately non-blocking. Waiting would let a second writer proceed the
+    /// moment the first paused between appends, which is precisely the case
+    /// that corrupts the log — the waiter's cached offsets and write positions
+    /// are stale by then. Refusing outright is the only correct answer, and
+    /// saying so plainly is better than silently losing half the records.
+    fn claim_writer(&mut self) -> Result<()> {
+        if self.writer_lock.is_some() {
+            return Ok(());
+        }
+
+        let lock_path = self.dir.join("partition.lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .context("opening partition lock file")?;
+
+        fs2::FileExt::try_lock_exclusive(&file)
+            .map_err(|_| second_writer_error(self.id, &self.dir))?;
+
+        self.writer_lock = Some(file);
+        Ok(())
+    }
+
     pub fn append(&mut self, record: &mut Record) -> Result<u64> {
-        let _lock = acquire_partition_lock(&self.dir)?;
+        self.claim_writer()?;
 
         // Check if we need to roll to a new segment (segmented mode only)
         if let PartitionStorage::Segmented {
@@ -414,7 +485,7 @@ impl Partition {
     /// Returns the assigned offsets.
     /// Acquires an exclusive flock for writer exclusion (NFS-safe).
     pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<u64>> {
-        let _lock = acquire_partition_lock(&self.dir)?;
+        self.claim_writer()?;
 
         let mut offsets = Vec::with_capacity(records.len());
 
@@ -1045,39 +1116,76 @@ mod tests {
     }
 
     #[test]
-    fn flock_serializes_concurrent_writers() {
-        use std::sync::Arc;
-        use std::thread;
+    fn a_second_writer_is_refused_loudly() {
+        // The old version of this test asserted `next_offset() >= 1` after two
+        // writers wrote eleven records between them. It passed while ten of
+        // them were being lost, which is how a documented guarantee survived
+        // being false. This asserts the actual behaviour instead.
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
 
+        let mut first = Partition::open(0, &part_dir, Compression::None).unwrap();
+        first.append(&mut make_record("t", "first")).unwrap();
+
+        // A second writer on the same directory must be refused, not queued:
+        // its cached offsets and write positions are already stale.
+        let mut second = Partition::open(0, &part_dir, Compression::None).unwrap();
+        let err = second
+            .append(&mut make_record("t", "second"))
+            .expect_err("a second writer must be refused");
+        let message = format!("{err:#}");
+
+        assert!(
+            message.contains("single-writer"),
+            "the error must explain why, got: {message}"
+        );
+        assert!(
+            message.contains("merkpgql") && message.contains("merk-aws"),
+            "the error must point at a backend that does support this, got: {message}"
+        );
+
+        // The holder is unaffected and the log is intact.
+        first.append(&mut make_record("t", "third")).unwrap();
+        assert_eq!(first.next_offset(), 2);
+        assert_eq!(first.read(0).unwrap().unwrap().value, "first");
+        assert_eq!(first.read(1).unwrap().unwrap().value, "third");
+    }
+
+    #[test]
+    fn readers_are_never_excluded() {
+        // Concurrent readers are supported and must stay supported: the claim
+        // is taken on first append, not on open.
+        let dir = tempfile::tempdir().unwrap();
+        let part_dir = dir.path().join("p0");
+
+        let mut writer = Partition::open(0, &part_dir, Compression::None).unwrap();
+        writer.append(&mut make_record("t", "value")).unwrap();
+
+        let reader = Partition::open(0, &part_dir, Compression::None).unwrap();
+        assert_eq!(reader.read(0).unwrap().unwrap().value, "value");
+
+        // And the writer keeps writing while the reader is open.
+        writer.append(&mut make_record("t", "more")).unwrap();
+        assert_eq!(writer.next_offset(), 2);
+    }
+
+    #[test]
+    fn the_lock_is_released_when_the_writer_goes_away() {
+        // A process that finishes and exits must not lock the partition
+        // forever, or a restart would be permanently locked out.
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
         {
-            let mut part = Partition::open(0, &part_dir, Compression::None).unwrap();
-            let mut rec = make_record("t", "seed");
-            part.append(&mut rec).unwrap();
+            let mut first = Partition::open(0, &part_dir, Compression::None).unwrap();
+            first.append(&mut make_record("t", "before")).unwrap();
         }
 
-        let part_dir = Arc::new(part_dir);
-        let handles: Vec<_> = (0..2)
-            .map(|thread_id| {
-                let pd = Arc::clone(&part_dir);
-                thread::spawn(move || {
-                    let mut part = Partition::open(0, &*pd, Compression::None).unwrap();
-                    for i in 0..5 {
-                        let mut rec = make_record("t", &format!("t{}-v{}", thread_id, i));
-                        part.append(&mut rec).unwrap();
-                    }
-                })
-            })
-            .collect();
-
-        for h in handles {
-            h.join().unwrap();
-        }
-
-        let part = Partition::open(0, &*part_dir, Compression::None).unwrap();
-        assert!(part.next_offset() >= 1);
+        let mut second = Partition::open(0, &part_dir, Compression::None).unwrap();
+        second
+            .append(&mut make_record("t", "after"))
+            .expect("the lock was released with the previous writer");
+        assert_eq!(second.next_offset(), 2);
     }
 
     #[test]
