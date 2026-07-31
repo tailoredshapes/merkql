@@ -122,12 +122,10 @@ impl Segment {
         let snapshot_path = dir.join("tree.snapshot");
         let tree = if snapshot_path.exists() {
             match Self::atomic_read(&snapshot_path) {
-                Ok(Some(data)) => {
-                    match bincode::deserialize::<TreeSnapshot>(&data) {
-                        Ok(snap) => MerkleTree::from_snapshot(snap),
-                        Err(_) => MerkleTree::new(),
-                    }
-                }
+                Ok(Some(data)) => match bincode::deserialize::<TreeSnapshot>(&data) {
+                    Ok(snap) => MerkleTree::from_snapshot(snap),
+                    Err(_) => MerkleTree::new(),
+                },
                 _ => MerkleTree::new(),
             }
         } else {
@@ -448,13 +446,15 @@ impl Segment {
 
         for local_offset in from..to {
             let mut crc_buf = [0u8; CRC_SIZE];
-            file.read_exact(&mut crc_buf)
-                .with_context(|| format!("reading index entry CRC at local offset {}", local_offset))?;
+            file.read_exact(&mut crc_buf).with_context(|| {
+                format!("reading index entry CRC at local offset {}", local_offset)
+            })?;
             let stored_crc = u32::from_le_bytes(crc_buf);
 
             let mut hash_buf = [0u8; 32];
-            file.read_exact(&mut hash_buf)
-                .with_context(|| format!("reading index entry hash at local offset {}", local_offset))?;
+            file.read_exact(&mut hash_buf).with_context(|| {
+                format!("reading index entry hash at local offset {}", local_offset)
+            })?;
 
             let computed_crc = crc32fast::hash(&hash_buf);
             if stored_crc != computed_crc {
@@ -479,8 +479,12 @@ impl Segment {
 
     fn load_meta(dir: &Path) -> Result<SegmentMeta> {
         let meta_path = dir.join("segment.meta");
-        let data = Self::atomic_read(&meta_path)?
-            .with_context(|| format!("CRC mismatch reading segment metadata at {}", meta_path.display()))?;
+        let data = Self::atomic_read(&meta_path)?.with_context(|| {
+            format!(
+                "CRC mismatch reading segment metadata at {}",
+                meta_path.display()
+            )
+        })?;
         bincode::deserialize(&data).context("deserializing segment meta")
     }
 

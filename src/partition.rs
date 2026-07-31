@@ -121,12 +121,10 @@ impl Partition {
         let snapshot_path = dir.join("tree.snapshot");
         let tree = if snapshot_path.exists() {
             match atomic_read(&snapshot_path) {
-                Ok(Some(data)) => {
-                    match bincode::deserialize::<TreeSnapshot>(&data) {
-                        Ok(snap) => MerkleTree::from_snapshot(snap),
-                        Err(_) => MerkleTree::new(),
-                    }
-                }
+                Ok(Some(data)) => match bincode::deserialize::<TreeSnapshot>(&data) {
+                    Ok(snap) => MerkleTree::from_snapshot(snap),
+                    Err(_) => MerkleTree::new(),
+                },
                 Ok(None) => MerkleTree::new(),
                 Err(_) => MerkleTree::new(),
             }
@@ -272,7 +270,8 @@ impl Partition {
                 {
                     // Cold start optimization: sealed segments load metadata only
                     // This avoids scanning the full index on startup
-                    let segment = Segment::open_sealed_metadata_only(seg_id, entry.path(), compression)?;
+                    let segment =
+                        Segment::open_sealed_metadata_only(seg_id, entry.path(), compression)?;
                     max_segment_id = max_segment_id.max(seg_id);
                     segments.push(segment);
                 }
@@ -349,7 +348,10 @@ impl Partition {
         let _lock = acquire_partition_lock(&self.dir)?;
 
         // Check if we need to roll to a new segment (segmented mode only)
-        if let PartitionStorage::Segmented { ref segments, active_segment_idx } = self.storage
+        if let PartitionStorage::Segmented {
+            ref segments,
+            active_segment_idx,
+        } = self.storage
             && let Some(max_records) = self.max_segment_records
         {
             let active_segment = &segments[active_segment_idx];
@@ -363,7 +365,11 @@ impl Partition {
         record.partition = self.id;
 
         match &mut self.storage {
-            PartitionStorage::Legacy { store, tree, index_writer } => {
+            PartitionStorage::Legacy {
+                store,
+                tree,
+                index_writer,
+            } => {
                 // Store the record
                 let record_bytes = record.serialize();
                 let record_hash = store.put(&record_bytes)?;
@@ -390,7 +396,10 @@ impl Partition {
                 let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
                 atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
             }
-            PartitionStorage::Segmented { segments, active_segment_idx } => {
+            PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            } => {
                 let segment = &mut segments[*active_segment_idx];
                 segment.append(record)?;
                 segment.flush()?;
@@ -410,7 +419,11 @@ impl Partition {
         let mut offsets = Vec::with_capacity(records.len());
 
         match &mut self.storage {
-            PartitionStorage::Legacy { store, tree, index_writer } => {
+            PartitionStorage::Legacy {
+                store,
+                tree,
+                index_writer,
+            } => {
                 for record in records.iter_mut() {
                     let offset = self.next_offset;
                     record.offset = offset;
@@ -441,7 +454,10 @@ impl Partition {
                 let snap_bytes = bincode::serialize(&snap).context("serializing snapshot")?;
                 atomic_write(&self.dir.join("tree.snapshot"), &snap_bytes)?;
             }
-            PartitionStorage::Segmented { segments, active_segment_idx } => {
+            PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            } => {
                 for record in records.iter_mut() {
                     // Check if we need to roll
                     if let Some(max_records) = self.max_segment_records {
@@ -455,8 +471,14 @@ impl Partition {
                             current_segment.seal()?;
 
                             let new_id = current_segment.id() + 1;
-                            let seg_dir = self.dir.join("segments").join(format!("seg-{:06}", new_id));
-                            let new_segment = Segment::create(new_id, seg_dir, self.next_offset, self.compression)?;
+                            let seg_dir =
+                                self.dir.join("segments").join(format!("seg-{:06}", new_id));
+                            let new_segment = Segment::create(
+                                new_id,
+                                seg_dir,
+                                self.next_offset,
+                                self.compression,
+                            )?;
                             segments.push(new_segment);
                             *active_segment_idx = segments.len() - 1;
                         }
@@ -556,7 +578,10 @@ impl Partition {
     pub fn merkle_root(&self) -> Result<Option<Hash>> {
         match &self.storage {
             PartitionStorage::Legacy { store, tree, .. } => tree.root(store),
-            PartitionStorage::Segmented { segments, active_segment_idx } => {
+            PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            } => {
                 // For segmented mode, return the active segment's merkle root
                 // In a full implementation, we'd have a partition-level merkle tree
                 segments[*active_segment_idx].merkle_root()
@@ -595,9 +620,10 @@ impl Partition {
     pub fn store(&self) -> &ObjectStore {
         match &self.storage {
             PartitionStorage::Legacy { store, .. } => store,
-            PartitionStorage::Segmented { segments, active_segment_idx } => {
-                segments[*active_segment_idx].store()
-            }
+            PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            } => segments[*active_segment_idx].store(),
         }
     }
 
@@ -620,7 +646,10 @@ impl Partition {
                 // Legacy mode doesn't support compaction
                 Ok(0)
             }
-            PartitionStorage::Segmented { segments, active_segment_idx } => {
+            PartitionStorage::Segmented {
+                segments,
+                active_segment_idx,
+            } => {
                 let mut removed = 0;
                 let mut new_segments = Vec::new();
                 let mut new_active_idx = 0;
@@ -659,7 +688,11 @@ impl Partition {
 
     /// Roll to a new segment, sealing the current active segment.
     fn roll_segment(&mut self) -> Result<()> {
-        if let PartitionStorage::Segmented { segments, active_segment_idx } = &mut self.storage {
+        if let PartitionStorage::Segmented {
+            segments,
+            active_segment_idx,
+        } = &mut self.storage
+        {
             // Seal the current segment
             segments[*active_segment_idx].seal()?;
 
@@ -727,7 +760,8 @@ impl Partition {
         }
 
         let index_path = self.dir.join("offsets.idx");
-        let mut file = fs::File::open(&index_path).context("opening offset index for batch read")?;
+        let mut file =
+            fs::File::open(&index_path).context("opening offset index for batch read")?;
 
         let seek_pos = from * INDEX_ENTRY_SIZE as u64;
         file.seek(SeekFrom::Start(seek_pos))
@@ -1103,12 +1137,8 @@ mod tests {
         let part_dir = dir.path().join("p0");
 
         // Create partition with max 5 records per segment
-        let mut part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(5),
-        ).unwrap();
+        let mut part =
+            Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
         // Write 12 records - should create 3 segments (5 + 5 + 2)
         for i in 0..12 {
@@ -1131,12 +1161,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        let mut part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(5),
-        ).unwrap();
+        let mut part =
+            Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
         // Write 10 records across 2 segments
         for i in 0..10 {
@@ -1157,12 +1183,8 @@ mod tests {
         let part_dir = dir.path().join("p0");
 
         {
-            let mut part = Partition::open_with_config(
-                0,
-                &part_dir,
-                Compression::None,
-                Some(5),
-            ).unwrap();
+            let mut part =
+                Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
             for i in 0..12 {
                 let mut rec = make_record("t", &format!("v{}", i));
@@ -1171,12 +1193,8 @@ mod tests {
         }
 
         // Reopen
-        let mut part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(5),
-        ).unwrap();
+        let mut part =
+            Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
         assert_eq!(part.next_offset(), 12);
         assert_eq!(part.segment_count(), 3);
@@ -1198,12 +1216,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        let mut part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(5),
-        ).unwrap();
+        let mut part =
+            Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
         // Write 15 records (3 segments)
         for i in 0..15 {
@@ -1247,7 +1261,8 @@ mod tests {
                 &part_dir,
                 Compression::None,
                 Some(10), // 10 records per segment
-            ).unwrap();
+            )
+            .unwrap();
 
             // Write 100 records (10 segments)
             for i in 0..100 {
@@ -1258,12 +1273,7 @@ mod tests {
 
         // Measure cold start time
         let start = Instant::now();
-        let part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(10),
-        ).unwrap();
+        let part = Partition::open_with_config(0, &part_dir, Compression::None, Some(10)).unwrap();
         let _cold_start_duration = start.elapsed();
 
         // Should have loaded all segments
@@ -1282,12 +1292,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part_dir = dir.path().join("p0");
 
-        let mut part = Partition::open_with_config(
-            0,
-            &part_dir,
-            Compression::None,
-            Some(5),
-        ).unwrap();
+        let mut part =
+            Partition::open_with_config(0, &part_dir, Compression::None, Some(5)).unwrap();
 
         // Write 15 records (3 segments)
         for i in 0..15 {

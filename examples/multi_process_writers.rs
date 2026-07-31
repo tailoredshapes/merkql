@@ -71,11 +71,14 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     let broker = Broker::open(BrokerConfig::new(dir.as_str()))?;
-    let mut consumer = Broker::consumer(&broker, ConsumerConfig {
-        group_id: "probe".into(),
-        auto_commit: false,
-        offset_reset: OffsetReset::Earliest,
-    });
+    let mut consumer = Broker::consumer(
+        &broker,
+        ConsumerConfig {
+            group_id: "probe".into(),
+            auto_commit: false,
+            offset_reset: OffsetReset::Earliest,
+        },
+    );
     consumer.subscribe(&[TOPIC])?;
     let records = consumer.poll(Duration::from_millis(500))?;
 
@@ -89,7 +92,11 @@ fn main() -> anyhow::Result<()> {
 
     println!("writers={writers} each={each}  child failures={failed}");
     println!("expected {} distinct records", expected.len());
-    println!("readable {} records, {} distinct values", records.len(), found.len());
+    println!(
+        "readable {} records, {} distinct values",
+        records.len(),
+        found.len()
+    );
     println!("offsets with >1 record: {}", dup_offsets.len());
     println!("LOST records: {}", missing.len());
     if !missing.is_empty() {

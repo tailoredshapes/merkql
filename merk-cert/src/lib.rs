@@ -39,9 +39,9 @@
 macro_rules! merk_cert_suite {
     ($subject:path, $fresh_site:path) => {
         mod cert_produce_consume {
-            use $subject as subject;
-            use $fresh_site as fresh_site;
             use std::time::Duration;
+            use $fresh_site as fresh_site;
+            use $subject as subject;
 
             fn earliest(
                 broker: &subject::broker::BrokerRef,
@@ -157,7 +157,11 @@ macro_rules! merk_cert_suite {
                     .unwrap();
 
                 let new = consumer.poll(Duration::from_millis(50)).unwrap();
-                assert_eq!(new.len(), 2, "poll picks up records appended after subscribe");
+                assert_eq!(
+                    new.len(),
+                    2,
+                    "poll picks up records appended after subscribe"
+                );
                 assert_eq!(new[0].value, "v3");
                 assert_eq!(new[1].value, "v4");
             }
@@ -212,9 +216,9 @@ macro_rules! merk_cert_suite {
         }
 
         mod cert_groups_offsets {
-            use $subject as subject;
-            use $fresh_site as fresh_site;
             use std::time::Duration;
+            use $fresh_site as fresh_site;
+            use $subject as subject;
 
             fn consumer(
                 broker: &subject::broker::BrokerRef,
@@ -392,8 +396,7 @@ macro_rules! merk_cert_suite {
                 let broker = subject::broker::Broker::open(site.config()).unwrap();
                 produce_n(&broker, "t", 3);
 
-                let mut a =
-                    consumer(&broker, "g", true, subject::consumer::OffsetReset::Earliest);
+                let mut a = consumer(&broker, "g", true, subject::consumer::OffsetReset::Earliest);
                 a.subscribe(&["t"]).unwrap();
                 assert_eq!(a.poll(Duration::from_millis(50)).unwrap().len(), 3);
                 a.close().unwrap();
@@ -414,9 +417,9 @@ macro_rules! merk_cert_suite {
         }
 
         mod cert_persistence {
-            use $subject as subject;
-            use $fresh_site as fresh_site;
             use std::time::Duration;
+            use $fresh_site as fresh_site;
+            use $subject as subject;
 
             fn config(group: &str) -> subject::consumer::ConsumerConfig {
                 subject::consumer::ConsumerConfig {
@@ -523,10 +526,10 @@ macro_rules! merk_cert_suite {
         }
 
         mod cert_partitioning {
-            use $subject as subject;
-            use $fresh_site as fresh_site;
             use std::collections::HashMap;
             use std::time::Duration;
+            use $fresh_site as fresh_site;
+            use $subject as subject;
 
             #[test]
             fn same_key_always_routes_to_same_partition() {
@@ -630,8 +633,8 @@ macro_rules! merk_cert_suite {
         }
 
         mod cert_merkle {
-            use $subject as subject;
             use $fresh_site as fresh_site;
+            use $subject as subject;
 
             #[test]
             fn root_exists_after_append_and_changes_with_growth() {
@@ -662,7 +665,11 @@ macro_rules! merk_cert_suite {
                     .unwrap()
                     .expect("root exists");
 
-                assert_ne!(root1.to_hex(), root2.to_hex(), "root moves as the log grows");
+                assert_ne!(
+                    root1.to_hex(),
+                    root2.to_hex(),
+                    "root moves as the log grows"
+                );
             }
 
             #[test]
